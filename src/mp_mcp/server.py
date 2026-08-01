@@ -13,14 +13,32 @@ import json
 import os
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
+from mcp.types import ToolAnnotations
 
 from . import tools as T
 from .config import Config, scrub
 from .quota import Cuota
 from .store import Store
 
-mcp = FastMCP("mercado-publico")
+mcp = MCPServer(
+    name="mercado-publico",
+    title="Mercado Publico (Chile) - acceso a datos",
+    version="0.1.0",
+    instructions=(
+        "Datos de compras publicas chilenas. Llama mp_schema_describe antes de "
+        "construir cualquier consulta: los nombres de campo no se adivinan. "
+        "Cada respuesta trae meta.procedencia, meta.as_of y meta.limitaciones; "
+        "no afirmes nada que el payload no sostenga."
+    ),
+)
+
+# Todas las herramientas son de solo lectura y no destructivas salvo las de
+# consultas guardadas, que son idempotentes. Declararlo explicitamente permite
+# al cliente decidir si necesita confirmacion humana.
+_RO = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
+_RW = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                      idempotentHint=True, openWorldHint=False)
 
 # El servidor MCP NO llama a la API y NO escribe los hechos: solo consulta.
 # MP_MCP_ESCRITURA=1 solo para desarrollo local con un unico proceso.
@@ -43,7 +61,7 @@ def _run(fn, *a, **kw) -> str:
 
 # --------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(annotations=_RO)
 def mp_schema_describe(entity: str | None = None,
                        incluir_limitaciones: bool = True) -> str:
     """Devuelve que se puede consultar: entidades, dimensiones, medidas y sus
@@ -64,7 +82,7 @@ def mp_schema_describe(entity: str | None = None,
     return _run(T.mp_schema_describe, _store, entity, incluir_limitaciones)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_RO)
 def mp_codes_search(vocabulary: str, texto: str = "", limit: int = 25) -> str:
     """Traduce lenguaje natural a codigos: UNSPSC, organismos, proveedores,
     regiones y comunas.
@@ -86,7 +104,7 @@ def mp_codes_search(vocabulary: str, texto: str = "", limit: int = 25) -> str:
     return _run(T.mp_codes_search, _store, vocabulary, texto, limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_RO)
 def mp_search(consulta: dict) -> str:
     """Consulta a nivel de fila. Devuelve registros individuales, no agregados.
 
@@ -108,7 +126,7 @@ def mp_search(consulta: dict) -> str:
     return _run(T.mp_search, _store, _cuota, consulta)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_RO)
 def mp_aggregate(consulta: dict) -> str:
     """Consulta agregada. Es el motor de graficos y de todo analisis.
 
@@ -143,7 +161,7 @@ def mp_aggregate(consulta: dict) -> str:
     return _run(T.mp_aggregate, _store, _cuota, consulta)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_RO)
 def mp_get(entity: str, key: str, incluir_relacionados: bool = True) -> str:
     """Trae una entidad completa por su clave natural, con lo relacionado unido
     en la misma llamada: no hace falta encadenar consultas.
@@ -158,7 +176,7 @@ def mp_get(entity: str, key: str, incluir_relacionados: bool = True) -> str:
     return _run(T.mp_get, _store, _cuota, entity, key, incluir_relacionados)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_RW)
 def mp_query_save(nombre: str, consulta: dict, modo: str,
                   descripcion: str = "", etiquetas: list[str] | None = None) -> str:
     """Guarda una consulta canonica con un nombre, para re-ejecutarla despues.
@@ -173,7 +191,7 @@ def mp_query_save(nombre: str, consulta: dict, modo: str,
     return _run(T.mp_query_save, _store, nombre, consulta, modo, descripcion, etiquetas)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_RW)
 def mp_query_run(ref: str, sobrescribir: dict | None = None) -> str:
     """Re-ejecuta una consulta guardada por nombre o query_id.
 
@@ -184,7 +202,7 @@ def mp_query_run(ref: str, sobrescribir: dict | None = None) -> str:
     return _run(T.mp_query_run, _store, _cuota, ref, sobrescribir)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_RO)
 def mp_query_list(etiqueta: str | None = None) -> str:
     """Lista las consultas guardadas disponibles, opcionalmente por etiqueta.
 
@@ -196,7 +214,27 @@ def mp_query_list(etiqueta: str | None = None) -> str:
 
 
 def main() -> None:
-    mcp.run()
+    """Arranca el servidor.
+
+    MP_TRANSPORT=stdio            (defecto) subproceso del cliente
+    MP_TRANSPORT=streamable-http  servicio HTTP independiente
+
+    El modo HTTP existe por una razon de aislamiento, no de comodidad: un
+    servidor stdio es un SUBPROCESO del agente y hereda su entorno. Medido en
+    D-012 de este proyecto: Hermes inyecta /opt/data/.env a sus hijos MCP, asi
+    que un MCP stdio recibe el token de Agent Vault del agente y puede hablar
+    por el proxy haciendose pasar por el. Si el MCP se trata como componente de
+    tercero, no puede correr como hijo stdio.
+    """
+    transporte = os.environ.get("MP_TRANSPORT", "stdio")
+    if transporte == "stdio":
+        mcp.run(transport="stdio")
+        return
+    import uvicorn
+    host = os.environ.get("MP_HTTP_HOST", "127.0.0.1")
+    port = int(os.environ.get("MP_HTTP_PORT", "8756"))
+    app = mcp.streamable_http_app(host=host)
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":

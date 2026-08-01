@@ -13,9 +13,6 @@ from .config import Config
 _SCHEMA = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
 
 
-CAT = "catalogo"          # nombre del schema adjunto
-
-
 class Store:
     """Dos bases, por la restriccion de un escritor por archivo en DuckDB.
 
@@ -37,18 +34,29 @@ class Store:
         self.con = duckdb.connect(str(cfg.db_path), read_only=read_only)
         if not read_only:
             self.con.execute(_SCHEMA.read_text(encoding="utf-8"))
-        self.con.execute(f"ATTACH IF NOT EXISTS '{cfg.catalog_path.as_posix()}' AS {CAT}")
-        self._catalogo()
+        self._cat = None          # conexion perezosa, ver la propiedad cat
         self._firma = self._stat()
 
-    def _catalogo(self) -> None:
-        self.con.execute(
-            f"ATTACH IF NOT EXISTS '{self.cfg.catalog_path.as_posix()}' AS {CAT}")
-        self.con.execute(f"""
-            CREATE TABLE IF NOT EXISTS {CAT}.consulta_guardada (
-                query_id VARCHAR PRIMARY KEY, nombre VARCHAR, descripcion VARCHAR,
-                modo VARCHAR, consulta JSON, etiquetas VARCHAR[],
-                creada_en TIMESTAMP, ultima_corrida TIMESTAMP)""")
+    @property
+    def cat(self):
+        """Conexion al catalogo, abierta al primer uso.
+
+        No es un ATTACH: un ATTACH hereda el modo de acceso de la conexion
+        principal, y con los hechos en solo-lectura `CREATE TABLE catalogo.*`
+        falla con "attached in read-only mode". Lo descubrio el primer arranque
+        real en modo produccion, que es el modo que el smoke test no ejercitaba.
+
+        Perezosa porque la mayoria de las consultas no tocan el catalogo: abrir
+        dos bases en el constructor era gratis en fallos y no en beneficios.
+        """
+        if self._cat is None:
+            self._cat = duckdb.connect(str(self.cfg.catalog_path), read_only=False)
+            self._cat.execute("""
+                CREATE TABLE IF NOT EXISTS consulta_guardada (
+                    query_id VARCHAR PRIMARY KEY, nombre VARCHAR, descripcion VARCHAR,
+                    modo VARCHAR, consulta JSON, etiquetas VARCHAR[],
+                    creada_en TIMESTAMP, ultima_corrida TIMESTAMP)""")
+        return self._cat
 
     def _stat(self):
         try:
@@ -78,7 +86,6 @@ class Store:
         except Exception:                                     # noqa: BLE001
             pass
         self.con = duckdb.connect(str(self.cfg.db_path), read_only=True)
-        self._catalogo()
         self._firma = actual
         return True
 
@@ -136,8 +143,8 @@ class Store:
 
     def guardar_consulta(self, query_id: str, nombre: str, descripcion: str,
                          modo: str, consulta: dict, etiquetas: list[str]) -> None:
-        self.con.execute(
-            """INSERT OR REPLACE INTO catalogo.consulta_guardada
+        self.cat.execute(
+            """INSERT OR REPLACE INTO consulta_guardada
                (query_id, nombre, descripcion, modo, consulta, etiquetas, creada_en,
                 ultima_corrida)
                VALUES (?, ?, ?, ?, ?, ?, ?, NULL)""",
@@ -147,32 +154,38 @@ class Store:
         )
 
     def leer_consulta(self, ref: str) -> dict | None:
-        r = self.one(
+        r = self.cat.execute(
             """SELECT query_id, nombre, descripcion, modo, consulta
-               FROM catalogo.consulta_guardada WHERE query_id = ? OR nombre = ? LIMIT 1""",
+               FROM consulta_guardada WHERE query_id = ? OR nombre = ? LIMIT 1""",
             [ref, ref],
-        )
+        ).fetchone()
         if not r:
             return None
         return {"query_id": r[0], "nombre": r[1], "descripcion": r[2],
                 "modo": r[3], "consulta": json.loads(r[4])}
 
     def listar_consultas(self, etiqueta: str | None = None) -> list[dict]:
+        def _q(sql, p=None):
+            cur = self.cat.execute(sql, p or [])
+            return [d[0] for d in cur.description], [list(r) for r in cur.fetchall()]
         if etiqueta:
-            cols, rows = self.rows(
+            cols, rows = _q(
                 """SELECT query_id, nombre, descripcion, modo, etiquetas
-                   FROM catalogo.consulta_guardada WHERE list_contains(etiquetas, ?)
+                   FROM consulta_guardada WHERE list_contains(etiquetas, ?)
                    ORDER BY nombre""", [etiqueta])
         else:
-            cols, rows = self.rows(
+            cols, rows = _q(
                 """SELECT query_id, nombre, descripcion, modo, etiquetas
-                   FROM catalogo.consulta_guardada ORDER BY nombre""")
+                   FROM consulta_guardada ORDER BY nombre""")
         return [dict(zip(cols, r)) for r in rows]
 
     def marcar_corrida(self, query_id: str) -> None:
-        self.con.execute(
-            "UPDATE catalogo.consulta_guardada SET ultima_corrida = ? WHERE query_id = ?",
+        self.cat.execute(
+            "UPDATE consulta_guardada SET ultima_corrida = ? WHERE query_id = ?",
             [datetime.now(timezone.utc), query_id])
 
     def close(self) -> None:
         self.con.close()
+        if self._cat is not None:
+            self._cat.close()
+            self._cat = None
