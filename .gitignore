@@ -1,0 +1,28 @@
+# Credenciales — NUNCA versionar
+ticket
+*.ticket
+.env
+.env.*
+secrets.yaml
+services.yaml          # lleva el nombre del vault; el services.yaml de ejemplo
+                       # va en docs/services.example.yaml
+
+# Almacen de datos: se reconstruye con mp-ingest, no se versiona
+*.duckdb
+*.duckdb.*
+*.wal
+data/
+
+# Entorno
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Sistema
+.DS_Store
+Thumbs.db

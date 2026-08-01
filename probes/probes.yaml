@@ -1,0 +1,395 @@
+# Bateria de sondas: la lista de potencialidades y limitaciones en forma
+# verificable. CAPABILITIES.md se GENERA desde este archivo mas los resultados
+# guardados en la tabla probe_result.
+#
+# Regla: una afirmacion sin corrida de sonda aparece como NO VERIFICADO y esta
+# prohibida en material comercial. Eso es lo que hace que el producto no venda
+# humo por construccion, en vez de por buena intencion.
+#
+# requiere:  ticket | red | almacen | agente | agent_vault
+# tipo:      potencialidad | limitacion
+# severidad: baja | media | alta   (solo para limitaciones)
+
+- id: V-01
+  tipo: potencialidad
+  afirmacion: >
+    El detalle de licitacion (?codigo=) devuelve Items/Listado con CodigoProducto
+    y CodigoCategoria en UNSPSC, lo que permite segmentar por mercado.
+  fuente_declarada: "[DOC] Diccionario de Datos - Licitaciones, campos 87-89"
+  metodo: Pedir el detalle de una licitacion real y verificar que existan las
+    claves Items.Listado[].CodigoProducto y CodigoCategoria con valor no vacio.
+  requiere: [ticket]
+  habilita: Segmentacion por rubro, perfiles de comprador, matching de oportunidades.
+
+- id: V-02
+  tipo: potencialidad
+  afirmacion: >
+    Las licitaciones adjudicadas traen, por linea, RutProveedor, CantidadAdjudicada
+    y MontoUnitario, lo que permite construir benchmark de precios reales.
+  fuente_declarada: "[DOC] Diccionario de Datos - Licitaciones, campos 94-97"
+  metodo: Pedir el detalle de una licitacion en estado adjudicada y verificar
+    Items.Listado[].Adjudicacion.MontoUnitario no nulo.
+  requiere: [ticket]
+  habilita: mp_aggregate con p10/p50/p90 sobre precio_unitario_clp. Es la funcion
+    de mayor valor del producto.
+
+- id: V-03
+  tipo: potencialidad
+  afirmacion: >
+    El bulk OCDS es descargable sin ticket y con licencia CC0, cubriendo el
+    historico de procesos de contratacion.
+  fuente_declarada: "[DOC] OCP Data Registry, publicacion 144; CC0 1.0"
+  metodo: HEAD/GET a datos-abiertos.chilecompra.cl/descargas/procesos-ocds y
+    registrar codigo HTTP, tamano y ultima modificacion.
+  requiere: [red]
+  habilita: Historia completa sin gastar cuota. Sin esto el backfill toma 490 dias.
+
+- id: V-04
+  tipo: potencialidad
+  afirmacion: >
+    El CSV mensual de ordenes de compra es descargable sin ticket, lo que da el
+    gasto efectivo sin consumir cuota.
+  fuente_declarada: "[DOC] Centro de ayuda Mercado Publico KA-01967"
+  metodo: GET al listado de descargas y verificar disponibilidad del ultimo mes
+    cerrado; registrar columnas y filas.
+  requiere: [red]
+  habilita: Gasto real por organismo y proveedor. Es la fuente de las OC.
+
+- id: V-05
+  tipo: potencialidad
+  afirmacion: >
+    Existe dataset propio de Compra Agil, canal que la documentacion de la API no
+    menciona.
+  fuente_declarada: "[DOC] datos-abiertos.chilecompra.cl/descargas/compra-agil"
+  metodo: GET al recurso y registrar disponibilidad y columnas.
+  requiere: [red]
+  habilita: Cobertura del canal de compras menores. Ignorarlo deja un hueco de
+    mercado sin explicacion para el cliente.
+
+- id: V-06
+  tipo: potencialidad
+  afirmacion: >
+    Las OC traen CodigoLicitacion, lo que permite unir lo licitado con lo
+    efectivamente ejecutado.
+  fuente_declarada: "[DOC] Diccionario de Datos - Ordenes de Compra, campo 7"
+  metodo: Contar en el almacen el porcentaje de OC con codigo_licitacion no vacio
+    que hace match con una fila de licitacion.
+  requiere: [almacen]
+  habilita: "Ratio ejecutado/adjudicado, deteccion de contratos que no se
+    ejecutaron, seguimiento post-adjudicacion."
+
+- id: V-07
+  tipo: potencialidad
+  afirmacion: >
+    Los endpoints BuscarProveedor y BuscarComprador responden y permiten armar
+    fichas de entidad.
+  fuente_declarada: "[DOC] chilecompra.cl/api"
+  metodo: Llamar ambos endpoints y registrar las claves devueltas.
+  requiere: [ticket]
+  habilita: Fichas de organismo y proveedor sin depender del bulk.
+
+- id: V-08
+  tipo: potencialidad
+  afirmacion: >
+    Agent Vault sustituye el ticket en el query string mediante substitutions con
+    in:[query], de modo que el proceso del MCP nunca conoce la credencial.
+  fuente_declarada: "[DOC] docs.agent-vault.dev/learn/services.md"
+  metodo: Configurar el servicio con auth passthrough + substitution, pedir con
+    ticket=__mp_ticket__ y verificar HTTP 200. Verificar ademas que el ticket no
+    aparece en /proc/<pid>/environ del proceso del MCP.
+  requiere: [agent_vault]
+  habilita: Brokering del ticket sin que el agente ni el MCP lo vean.
+  nota: >
+    La combinacion passthrough + substitutions NO esta ejemplificada en la
+    documentacion. Si falla, el plan B es auth-type custom con un header inerte y
+    la substitution declarada aparte.
+
+- id: P-01
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    El endpoint de listado (?fecha= o ?estado=) devuelve solo CodigoExterno,
+    Nombre, CodigoEstado y FechaCierre. Sin items, sin UNSPSC, sin monto, sin
+    comprador.
+  fuente_declarada: "[DOC] chilecompra.cl/api y ejemplos oficiales"
+  metodo: Llamar licitaciones.json?estado=activas y volcar el conjunto exacto de
+    claves de un elemento del Listado.
+  requiere: [ticket]
+  impacto: Segmentar por mercado exige una llamada de detalle por licitacion.
+  bloquea_venta_de: "'Filtrado por rubro en tiempo real sobre la API' sin almacen
+    intermedio."
+
+- id: P-02
+  tipo: limitacion
+  severidad: media
+  afirmacion: >
+    El conjunto de campos del detalle puede diferir del diccionario de datos
+    publicado.
+  fuente_declarada: "[INFERIDO]"
+  metodo: Comparar las claves reales del detalle contra la lista de 97 campos del
+    diccionario y registrar faltantes y extras.
+  requiere: [ticket]
+  impacto: Cualquier campo que el diccionario promete y la API no entrega es una
+    funcion prometida que no existe.
+  nota: >
+    MEDIDO 2026-07-31: el detalle trae 89 rutas de campo. Ademas aparecio el tipo
+    de licitacion "O1" en 10 de 200 licitaciones (5 %), que NO figura en la
+    seccion 3.1 del diccionario de datos (L1, LE, LP, LQ, LR, LS, E2, CO, B2, H2,
+    I2). Un producto que mapee tipos contra la tabla documentada deja ese 5 %
+    fuera en silencio.
+
+- id: P-03
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    La cuota es de 10.000 hits/dia por ticket y no es modificable. El
+    comportamiento exacto al alcanzarla no esta documentado.
+  fuente_declarada: "[DOC] chilecompra.cl/api"
+  metodo: Leer el libro mayor de cuota_hit y registrar el maximo observado en 24 h
+    junto al codigo HTTP recibido en el rechazo, si ocurrio. NO se agota la cuota
+    deliberadamente.
+  requiere: [ticket]
+  impacto: El techo es duro y compartido por todos los clientes del producto.
+  bloquea_venta_de: "Cualquier promesa de 'consultas ilimitadas'."
+
+- id: P-04
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    El ticket es unico por persona, validado contra nombre, RUT y email reales, y
+    ChileCompra puede limitarlo o suspenderlo.
+  fuente_declarada: "[DOC] chilecompra.cl/api, condiciones de uso"
+  metodo: Verificacion documental. No hay medicion posible sin arriesgar el acceso.
+  requiere: []
+  impacto: Punto unico de falla del producto. Debe estar a nombre de la empresa,
+    no de una persona.
+  bloquea_venta_de: "Un modelo donde cada cliente use su propio ticket sin
+    tramitarlo el mismo."
+
+- id: P-07
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    Hay una contradiccion sin resolver en la cobertura del bloque implementation
+    del OCDS chileno: el registro OCP reporta 74.931 contratos frente a 4,9 M
+    adjudicaciones, mientras Development Gateway afirma cobertura alta.
+  fuente_declarada: "[DOC] contradictorio entre dos fuentes"
+  metodo: Parsear N lineas del JSONL y contar cuantas traen contracts[],
+    contracts[].implementation y transacciones tipo OC.
+  requiere: [red]
+  impacto: Si el bloque implementation esta vacio, las OC historicas solo existen
+    en el CSV procesado, con su definicion de outlier ajena.
+  bloquea_venta_de: "Analisis de ejecucion contractual historica hasta que se mida."
+
+- id: P-08
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    Los codigos UNSPSC son version 7 y los digita el comprador: hay items sin
+    codigo, con codigo de longitud irregular, y concentracion artificial en el
+    commodity generico de la clase.
+  fuente_declarada: "[DOC] version; [INFERIDO] calidad"
+  metodo: Sobre licitacion_item medir porcentaje sin codigo, distribucion de
+    longitud del codigo, y los 20 commodities mas frecuentes. Se CONFIRMA solo si
+    mas del 5 % no tiene codigo o mas del 20 % usa el generico terminado en 00.
+  requiere: [almacen]
+  impacto: El matching por codigo solo es incompleto. Hay que combinar con texto.
+  bloquea_venta_de: "'Clasificacion exacta por rubro' sin margen de error declarado."
+
+- id: P-09
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    El diccionario de datos de licitaciones NO incluye criterios de evaluacion,
+    ponderaciones, ni las ofertas de los proveedores no adjudicados. Solo entrega
+    UrlActa como PDF.
+  fuente_declarada: "[DOC] ausencia en el diccionario de 97 campos"
+  metodo: Buscar en las claves reales del detalle cualquier campo cuyo nombre
+    contenga criterio, evaluacion, ponderacion, oferta o puntaje.
+  requiere: [ticket]
+  impacto: >
+    No se puede calcular tasa de exito real de un proveedor (participo vs gano),
+    porque no hay registro estructurado de participacion. Solo se puede saber
+    quien gano. Tampoco se puede simular puntaje sin parsear PDFs de actas.
+  bloquea_venta_de: >
+    'Win rate', 'probabilidad de adjudicacion' y 'simulador de puntaje' como
+    funciones basadas en datos estructurados.
+
+- id: P-10
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    El CSV mensual de ordenes de compra esta procesado por ChileCompra:
+    convertido a pesos y con transacciones atipicas removidas.
+  fuente_declarada: "[DOC] datosabiertos.chilecompra.cl/Data/SobreDatosAbiertos"
+  metodo: Comparar el total del CSV de un mes contra la suma de OC del mismo mes
+    obtenidas por API, y registrar la diferencia.
+  requiere: [red, ticket]
+  impacto: Se hereda una definicion de outlier ajena. No usar para benchmark de
+    precios.
+  bloquea_venta_de: "Deteccion de anomalias y sobreprecios sobre datos de OC."
+
+- id: P-11
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    Los montos vienen en CLP, CLF (UF), USD, UTM y EUR, y sin serie de tipo de
+    cambio no son agregables entre si.
+  fuente_declarada: "[DOC] Diccionario, seccion 3.2"
+  metodo: Distribucion de la dimension moneda por conteo y por monto, y
+    porcentaje de filas con tipo de cambio disponible a su fecha.
+  requiere: [almacen]
+  impacto: Define el tamano real del problema de conversion. Las filas sin
+    conversion quedan NULL y se reportan en meta.cobertura.
+  bloquea_venta_de: "Totales de mercado en CLP mientras la cobertura de conversion
+    no este medida y declarada."
+
+- id: P-12
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    MontoEstimado solo es publico si VisibilidadMonto=1, y Estimacion=3 significa
+    que el organismo declara que el monto no es estimable.
+  fuente_declarada: "[DOC] Diccionario, campos 55-58 y seccion 3.3"
+  metodo: Porcentaje de licitaciones con visibilidad_monto verdadero y con
+    monto_estimado no nulo, por tipo de licitacion.
+  requiere: [almacen]
+  impacto: Agregar montos estimados sin filtrar subestima el total de forma
+    silenciosa.
+  bloquea_venta_de: "'Tamano del mercado' como cifra unica sin declarar cobertura."
+
+- id: P-13
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    Ninguna de las fuentes de ChileCompra entrega la serie de UF, UTM ni tipo de
+    cambio. Hay que integrar una fuente externa.
+  fuente_declarada: "[INFERIDO] por ausencia"
+  metodo: Contar filas en tipo_cambio por moneda y rango de fechas cubierto.
+  requiere: [almacen]
+  impacto: Sin esta tabla, toda medida en CLP sobre documentos en UF, USD, UTM o
+    EUR queda NULL.
+
+- id: P-14
+  tipo: limitacion
+  severidad: media
+  afirmacion: >
+    El CSV de OC se publica a mas tardar el dia 20 del mes siguiente: rezago de
+    hasta ~50 dias.
+  fuente_declarada: "[DOC] Centro de ayuda KA-01967"
+  metodo: Registrar la fecha de ultima modificacion del recurso frente al mes que
+    cubre, durante tres meses consecutivos.
+  requiere: [red]
+  impacto: No sirve para preguntas sobre la semana en curso. Para eso se usa la
+    reserva on-demand de la cuota, dirigida.
+  bloquea_venta_de: "'Datos de gasto en tiempo real'."
+
+- id: P-15
+  tipo: limitacion
+  severidad: media
+  afirmacion: >
+    No esta verificado hasta que fecha hacia atras responde el parametro
+    fecha=ddmmaaaa de la API.
+  fuente_declarada: "[INFERIDO]"
+  metodo: Consultar fechas de hace 1 mes, 1 ano y 5 anos y registrar si devuelven
+    datos o vacio.
+  requiere: [ticket]
+  impacto: Define si el delta puede recuperarse tras una caida larga de ingesta.
+
+- id: P-16
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    El presupuesto de cuota se dimensiono con una estimacion inferida de ~1.150
+    licitaciones nuevas por dia habil, y confundiendo STOCK con FLUJO:
+    estado=activas devuelve las licitaciones abiertas en este momento, no las
+    publicadas hoy.
+  fuente_declarada: "[INFERIDO], refutado parcialmente por la primera medicion"
+  metodo: Comparar el conteo de estado=activas (stock) contra fecha=ddmmaaaa de
+    tres dias habiles (flujo), y calcular el ratio. Registrar el costo en hits de
+    la carga inicial y de la ingesta diaria por separado.
+  requiere: [ticket]
+  impacto: >
+    La carga inicial cuesta un hit por licitacion abierta y es un costo unico;
+    la ingesta diaria cuesta un hit por licitacion nueva. Dimensionar con el
+    numero equivocado sobreestima el costo recurrente o revienta la cuota el
+    primer dia.
+  nota: >
+    Primera medicion 2026-07-31: estado=activas devolvio 4.313, contra los ~1.150
+    inferidos. Eso es 43 % de la cuota diaria en una sola pasada, y obliga a
+    separar los dos numeros. El flujo sigue sin medir.
+
+- id: P-17
+  tipo: limitacion
+  severidad: media
+  afirmacion: >
+    El volumen diario de ordenes de compra no esta medido.
+  fuente_declarada: "[INFERIDO]"
+  metodo: Contar filas del CSV de un mes cerrado y dividir por dias habiles.
+  requiere: [red]
+  impacto: Confirma o refuta que las OC no caben por API y deben venir del bulk.
+
+- id: P-18
+  tipo: limitacion
+  severidad: media
+  afirmacion: >
+    El diccionario de licitaciones no incluye campos de garantia de seriedad de
+    la oferta ni de fiel cumplimiento.
+  fuente_declarada: "[DOC] ausencia en el diccionario de 97 campos"
+  metodo: Buscar en las claves reales del detalle cualquier campo cuyo nombre
+    contenga garantia, boleta o caucion.
+  requiere: [ticket]
+  impacto: >
+    La bandera 'requiere garantia' no se puede derivar de datos estructurados; hay
+    que leer las bases en PDF. Cualquier alerta de garantia es parseo de documento,
+    no consulta.
+  bloquea_venta_de: "'Alerta automatica de garantias exigidas' como funcion de datos."
+
+- id: P-19
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    La API no permite escritura: no existe endpoint para presentar una oferta.
+  fuente_declarada: "[DOC] chilecompra.cl/api, solo endpoints de lectura"
+  metodo: Verificacion documental de la lista de endpoints publicados.
+  requiere: []
+  impacto: La postulacion en mercadopublico.cl es manual y humana.
+  bloquea_venta_de: "'Postulacion automatica' o 'el agente presenta la oferta'."
+
+- id: P-21
+  tipo: limitacion
+  severidad: alta
+  afirmacion: >
+    Ademas de la cuota diaria de 10.000, ChileCompra aplica un LIMITE DE TASA DE
+    CORTO PLAZO que no documenta en ninguna parte. Sin marcapasos entre requests,
+    la API devuelve 429 en cadena.
+  fuente_declarada: "[MEDIDO] 2026-07-31, no aparece en ninguna documentacion"
+  metodo: Repetir el mismo request a intervalos crecientes (0 / 0,5 / 1,0 / 1,5 /
+    2,5 s) y buscar el intervalo minimo con cero rechazos. Cuesta ~15 hits.
+  requiere: [ticket]
+  impacto: >
+    La carga inicial del libro abierto (~4.348 licitaciones) no es una pasada
+    rapida: a un request por segundo son mas de 70 minutos. El cliente necesita
+    marcapasos, backoff exponencial y respeto de Retry-After, o la ingesta no
+    avanza y el ticket queda marcado por uso inconsistente.
+  bloquea_venta_de: >
+    'Consulta en vivo contra la API' como respuesta a una pregunta de usuario:
+    cualquier producto que dispare varias llamadas por pregunta se auto-throttlea.
+  nota: >
+    Primera evidencia: en una corrida sin pausas, 216 de 255 requests devolvieron
+    429. Los exitosos quedaron espaciados 0,7-1,0 s. Ademas aparecieron respuestas
+    HTTP 203 (Non-Authoritative Information) con cuerpo valido, que el cliente
+    trataba como error: corregido para aceptar todo 2xx.
+
+- id: P-20
+  tipo: limitacion
+  severidad: media
+  afirmacion: >
+    No esta medido con que frecuencia un agente construye un mp_aggregate valido
+    al primer intento. Es la metrica que decide si la gramatica generica sirve.
+  fuente_declarada: "[INFERIDO]"
+  metodo: Correr las 20 preguntas reales del set de evaluacion y registrar
+    intentos por pregunta, llamadas totales y tokens.
+  requiere: [agente]
+  impacto: Si hacen falta 3 intentos por consulta, la gramatica esta mal disenada
+    y hay que mover mas preguntas a la biblioteca de consultas guardadas.

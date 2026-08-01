@@ -1,0 +1,215 @@
+# Biblioteca de consultas canonicas.
+#
+# Resuelve la tension entre flexibilidad y efectividad: la gramatica generica de
+# mp_aggregate es la escotilla de escape, y esto es el camino comun. Una pregunta
+# frecuente cuesta UNA llamada con parametros, no tres intentos de construir la
+# consulta desde cero.
+#
+# Todas se parametrizan con mp_query_run(ref, sobrescribir={...}).
+# Cargar con: mp-ingest seed-consultas
+
+- nombre: benchmark_precio_por_commodity
+  modo: aggregate
+  etiquetas: [precio, benchmark]
+  descripcion: >
+    Distribucion de precios unitarios adjudicados para un commodity UNSPSC.
+    Sobrescribir el filtro de unspsc_commodity y la ventana de fechas.
+    OJO: agrupa por unidad_medida porque precios de unidades distintas no son
+    comparables.
+  consulta:
+    entity: adjudicacion_item
+    filters:
+      - {field: unspsc_commodity, op: in, value: ["CAMBIAR"]}
+      - {field: fecha_adjudicacion, op: between, value: ["2024-01-01", "2026-12-31"]}
+    group_by: [unidad_medida]
+    measures:
+      - {fn: p10, field: precio_unitario_clp, alias: p10}
+      - {fn: p50, field: precio_unitario_clp, alias: mediana}
+      - {fn: p90, field: precio_unitario_clp, alias: p90}
+      - {fn: stddev, field: precio_unitario_clp, alias: desv}
+      - {fn: count, field: n_adjudicaciones, alias: n}
+    order_by: [{alias: n, dir: desc}]
+    limit: 50
+
+- nombre: benchmark_precio_por_region
+  modo: aggregate
+  etiquetas: [precio, benchmark, geografia]
+  descripcion: Mediana de precio adjudicado por region para un commodity.
+  consulta:
+    entity: adjudicacion_item
+    filters:
+      - {field: unspsc_commodity, op: in, value: ["CAMBIAR"]}
+    group_by: [region_comprador, unidad_medida]
+    measures:
+      - {fn: p50, field: precio_unitario_clp, alias: mediana}
+      - {fn: count, field: n_adjudicaciones, alias: n}
+    order_by: [{alias: n, dir: desc}]
+    limit: 100
+
+- nombre: perfil_comprador_que_compra
+  modo: aggregate
+  etiquetas: [comprador, perfil]
+  descripcion: >
+    Que familias UNSPSC compra un organismo y con que volumen. Sobrescribir el
+    filtro de organismo.
+  consulta:
+    entity: licitacion_item
+    filters:
+      - {field: organismo, op: eq, value: "CAMBIAR"}
+    group_by: [unspsc_familia]
+    measures:
+      - {fn: count, field: n_items, alias: lineas}
+      - {fn: count_distinct, field: n_licitaciones, alias: licitaciones}
+    order_by: [{alias: lineas, dir: desc}]
+    limit: 30
+
+- nombre: perfil_comprador_a_quien_adjudica
+  modo: aggregate
+  etiquetas: [comprador, competencia]
+  descripcion: >
+    A que proveedores adjudica un organismo y por cuanto. Es la base del analisis
+    de incumbencia: si un proveedor concentra el 60 %, la barrera es real.
+  consulta:
+    entity: adjudicacion_item
+    filters:
+      - {field: organismo, op: eq, value: "CAMBIAR"}
+      - {field: fecha_adjudicacion, op: gte, value: "2024-01-01"}
+    group_by: [nombre_proveedor]
+    measures:
+      - {fn: sum, field: monto_linea_clp, alias: monto_clp}
+      - {fn: count, field: n_adjudicaciones, alias: lineas}
+    order_by: [{alias: monto_clp, dir: desc}]
+    limit: 25
+
+- nombre: perfil_comprador_estacionalidad
+  modo: aggregate
+  etiquetas: [comprador, temporal]
+  descripcion: Publicaciones por mes de un organismo, para anticipar su ciclo.
+  consulta:
+    entity: licitacion
+    filters:
+      - {field: organismo, op: eq, value: "CAMBIAR"}
+    grain: mes
+    grain_field: fecha_publicacion
+    measures:
+      - {fn: count, field: n_licitaciones, alias: licitaciones}
+      - {fn: sum, field: monto_estimado_clp, alias: monto_estimado_clp}
+    limit: 120
+
+- nombre: perfil_comprador_plazos
+  modo: aggregate
+  etiquetas: [comprador, plazos]
+  descripcion: >
+    Cuanto tarda un organismo entre publicacion y cierre, y entre cierre y
+    adjudicacion. Sirve para planificar capacidad de respuesta.
+  consulta:
+    entity: licitacion
+    filters:
+      - {field: organismo, op: eq, value: "CAMBIAR"}
+    group_by: [tipo]
+    measures:
+      - {fn: p50, field: dias_publicacion_cierre, alias: dias_a_cierre_p50}
+      - {fn: p50, field: dias_cierre_adjudicacion, alias: dias_a_adjudicacion_p50}
+      - {fn: count, field: n_licitaciones, alias: n}
+    order_by: [{alias: n, dir: desc}]
+    limit: 20
+
+- nombre: perfil_competidor
+  modo: aggregate
+  etiquetas: [competencia]
+  descripcion: >
+    En que familias y con que compradores gana un proveedor. NO es win rate:
+    P-09 documenta que no hay registro estructurado de participacion, solo de
+    adjudicacion. Reportarlo como tasa de exito seria inventar el denominador.
+  consulta:
+    entity: adjudicacion_item
+    filters:
+      - {field: rut_proveedor, op: eq, value: "CAMBIAR"}
+    group_by: [unspsc_familia, organismo]
+    measures:
+      - {fn: sum, field: monto_linea_clp, alias: monto_clp}
+      - {fn: count, field: n_adjudicaciones, alias: lineas}
+    order_by: [{alias: monto_clp, dir: desc}]
+    limit: 50
+
+- nombre: oportunidades_abiertas_por_familia
+  modo: search
+  etiquetas: [oportunidades]
+  descripcion: >
+    Licitaciones publicadas cuyas lineas caen en un conjunto de familias UNSPSC.
+    Es el corte de mercado mas basico. Combinar con un filtro de texto sobre
+    nombre_producto para no perder items mal clasificados (ver P-08).
+  consulta:
+    entity: licitacion_item
+    filters:
+      - {field: unspsc_familia, op: in, value: ["CAMBIAR"]}
+      - {field: estado_licitacion, op: eq, value: "Publicada"}
+    fields: [codigo_licitacion, nombre_producto, unspsc_familia, unidad_medida,
+             cantidad, organismo, region_comprador, fecha_cierre]
+    order_by: [{alias: fecha_cierre, dir: asc}]
+    limit: 200
+
+- nombre: cierres_proximos
+  modo: search
+  etiquetas: [oportunidades, plazos]
+  descripcion: Licitaciones que cierran en una ventana de fechas. Sobrescribir el rango.
+  consulta:
+    entity: licitacion
+    filters:
+      - {field: estado, op: eq, value: "Publicada"}
+      - {field: fecha_cierre, op: between, value: ["2026-08-01", "2026-08-15"]}
+    fields: [codigo, nombre, organismo, region_comprador, tipo, moneda,
+             fecha_cierre, url_ficha]
+    order_by: [{alias: fecha_cierre, dir: asc}]
+    limit: 300
+
+- nombre: ratio_adjudicado_vs_estimado
+  modo: aggregate
+  etiquetas: [comprador, precio]
+  descripcion: >
+    Calibra si un organismo adjudica por debajo, por encima o cerca de su monto
+    estimado. Solo cubre licitaciones con monto visible: revisar
+    meta.cobertura y P-12 antes de citar la cifra.
+  consulta:
+    entity: licitacion
+    filters:
+      - {field: estado, op: eq, value: "Adjudicada"}
+      - {field: visibilidad_monto, op: eq, value: true}
+    group_by: [organismo]
+    measures:
+      - {fn: sum, field: monto_estimado_clp, alias: estimado_clp}
+      - {fn: count, field: n_licitaciones, alias: n}
+    order_by: [{alias: estimado_clp, dir: desc}]
+    limit: 50
+
+- nombre: gasto_por_proveedor_via_oc
+  modo: aggregate
+  etiquetas: [gasto, competencia]
+  descripcion: >
+    Gasto efectivo por proveedor segun ordenes de compra. Fuente procesada por
+    ChileCompra (P-10): con outliers removidos. No usar para detectar sobreprecio.
+  consulta:
+    entity: orden_compra
+    filters:
+      - {field: fecha_envio, op: gte, value: "2025-01-01"}
+    group_by: [nombre_proveedor]
+    measures:
+      - {fn: sum, field: total_clp, alias: total_clp}
+      - {fn: count, field: n_ordenes, alias: ordenes}
+    order_by: [{alias: total_clp, dir: desc}]
+    limit: 50
+
+- nombre: mercado_por_segmento_temporal
+  modo: aggregate
+  etiquetas: [mercado, temporal]
+  descripcion: >
+    Evolucion mensual del numero de lineas licitadas por segmento UNSPSC. Vista
+    de portafolio para dashboards.
+  consulta:
+    entity: licitacion_item
+    grain: mes
+    grain_field: fecha_publicacion
+    group_by: [unspsc_segmento]
+    measures:
+      - {fn: count, field: n_items, alias: lineas}
+    limit: 2000

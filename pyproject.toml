@@ -1,0 +1,26 @@
+[project]
+name = "mp-mcp"
+version = "0.1.0"
+description = "MCP de acceso a datos de Mercado Público (Chile). Agnóstico de rubro y de producto."
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.2.0",
+    "duckdb>=1.1.0",
+    "httpx>=0.27.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+mp-mcp = "mp_mcp.server:main"
+mp-ingest = "mp_mcp.cli:main"
+mp-probe = "mp_mcp.probe:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mp_mcp"]
