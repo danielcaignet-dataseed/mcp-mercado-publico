@@ -1,0 +1,31 @@
+# Declaracion del servicio en Agent Vault, para el vault de INGESTA.
+# Copiar a services.yaml (ignorado por git) y aplicar con:
+#   agent-vault vault service set -f services.yaml --vault mercadopublico-ingesta-vault
+#
+# El ticket de Mercado Publico viaja en el QUERY STRING (?ticket=...), no en un
+# header. Los cinco auth types de Agent Vault -- bearer, basic, api-key, custom,
+# passthrough -- son todos de header, asi que ninguno sirve solo.
+#
+# `substitutions` es un mecanismo distinto de los auth types y acepta `in: [query]`.
+# El proceso de ingesta emite `__mp_ticket__` y el proxy lo reemplaza por el valor
+# real: el proceso nunca conoce la credencial. Mismo patron que
+# `__agent_vault_google_oauth__` en PROC-001 §4.
+#
+# [SIN VERIFICAR] La combinacion passthrough + substitutions NO esta ejemplificada
+# en la documentacion de Agent Vault. Es la sonda V-08. Si falla, el plan B es
+# auth-type `custom` con un header inerte y las substitutions declaradas aparte.
+
+services:
+  - host: api.mercadopublico.cl
+    auth:
+      type: passthrough        # no hay header que inyectar
+    substitutions:
+      - key: MERCADOPUBLICO_TICKET
+        placeholder: __mp_ticket__
+        in: [query]
+
+  # Descargas masivas: sin credencial, pero el host tiene que estar permitido
+  # o el proxy lo bloquea.
+  - host: datos-abiertos.chilecompra.cl
+    auth:
+      type: passthrough
