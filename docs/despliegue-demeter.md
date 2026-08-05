@@ -193,3 +193,82 @@ existe por más que el diagrama diga otra cosa.
   propósito, esperando `--inspect` sobre un archivo real.
 - `CAPABILITIES.md`: 14 de 27 afirmaciones medidas. Las 13 restantes están
   bloqueadas por el bulk, por Agent Vault o por una corrida de agente.
+
+---
+
+# Revisión 2026-08-01 — simplificación y dos correcciones
+
+Lo de arriba queda como registro. Esto lo reemplaza donde difiere.
+
+## 1. Un contenedor, no dos
+
+Demeter consume el MCP **por HTTP**, así que no monta ningún volumen. Con eso se
+caen el segundo contenedor, el segundo volumen y el montaje `:ro`: eran defensa
+en profundidad que no pagaba su costo operativo.
+
+```
+  contenedor mp-mcp                 agent-vault                Demeter
+  ┌──────────────────┐   ?ticket=   ┌──────────────┐          ┌────────────┐
+  │ servidor MCP HTTP│ __mp_ticket__│ vault        │          │ solo una   │
+  │ cron de ingesta  │─────────────►│ mp-ingesta   │          │ URL        │
+  │ volumen mp-data  │  vía proxy   │ TICKET cifr. │◄─────────┤ HTTP       │
+  │ único secreto:   │              └──────┬───────┘          └────────────┘
+  │ su token de AV   │                     ▼
+  └──────────────────┘        api.mercadopublico.cl
+```
+
+**El ticket vive cifrado en el contenedor de Agent Vault, no en el del MCP.** El
+contenedor del MCP tiene un solo secreto: su propio token de agente, acotado a un
+vault con un solo host. Si se filtra, el radio es "puede consultar Mercado
+Publico", y se rota con `agent rotate` sin tocar ChileCompra.
+
+Lo que se pierde con un solo contenedor: el proceso del MCP comparte entorno con
+el cron de ingesta, asi que *podria* ver el proxy del ticket. Riesgo teorico: el
+MCP no expone ninguna herramienta que haga HTTP -- no hay passthrough, solo
+lectura de DuckDB.
+
+## 2. Corrección: la herencia de entorno no era el motivo
+
+La documentacion de Hermes dice que **no** pasa el entorno completo del shell a
+los servidores stdio: solo el `env:` declarado mas una linea base segura.
+
+Entonces cuando en D-012 aparecio `AGENT_VAULT_VAULT` en el entorno de los hijos
+MCP de Demeter, **no era herencia ciega: el bloque `env:` de `hostinger_safe` en
+`config.yaml` lo declaraba explicitamente.** La inferencia estaba mal atribuida.
+
+`[SIN VERIFICAR]` Queda abierto que incluye esa "linea base segura". Si incluye
+`HTTPS_PROXY`, un MCP stdio de tercero seguiria recibiendo el proxy de Demeter
+con su token. Es medible.
+
+HTTP sigue siendo la eleccion correcta, con el motivo bien puesto: el MCP es un
+servicio independiente y no un subproceso del agente, y `tools.exclude` da una
+perilla de contencion del lado de Hermes.
+
+## 3. Sin bearer token
+
+`[DOC]` Hermes acepta MCP remotos por HTTP:
+
+```yaml
+mcp_servers:
+  mercado_publico:
+    url: "http://mp-mcp:8756/mcp"
+    timeout: 60
+    connect_timeout: 10
+    tools:
+      include: []
+      exclude: []
+      resources: false
+      prompts: false
+```
+
+`/reload-mcp` en el chat re-descubre sin reiniciar. Las tools quedan como
+`mcp_mercado_publico_mp_aggregate`.
+
+**Sin `headers: Authorization`.** El issue #11239 del repo de Hermes -- soporte
+para referencias a secretos por variable de entorno en `config.yaml` -- esta
+ABIERTO, asi que hoy un bearer ahi va en texto plano dentro del volumen
+escribible de Demeter. Seria repetir el patron que este proyecto lleva cinco
+fugas intentando eliminar.
+
+El control es aislamiento de red: el contenedor del MCP escucha solo en la red
+interna de Docker, sin puerto publicado.
