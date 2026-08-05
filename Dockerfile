@@ -31,7 +31,8 @@ ENV MP_HOME=/data/mp \
 
 VOLUME ["/data/mp"]
 
-# Sin CMD por defecto a proposito: este contenedor no debe quedar corriendo.
-# Lo dispara el timer nocturno con el pipeline completo.
-ENTRYPOINT ["mp-ingest"]
-CMD ["estado"]
+EXPOSE 8756
+
+# Por defecto sirve el MCP. La ingesta se dispara como comando aparte:
+#   docker exec mp-mcp sh -c 'MP_DB=/data/mp/mp.duckdb.next mp-ingest live-listado #     --estado activas && MP_DB=/data/mp/mp.duckdb.next mp-ingest derivar #     && MP_DB=/data/mp/mp.duckdb.next mp-ingest convertir && mp-ingest publicar'
+CMD ["mp-mcp"]
