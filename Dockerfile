@@ -25,9 +25,13 @@ USER mp
 # asi que la ingesta construye aparte y `mp-ingest publicar` hace el rename
 # atomico.
 ENV MP_HOME=/data/mp \
-    MP_DB=/data/mp/mp.duckdb.next \
+    MP_DB=/data/mp/mp.duckdb \
+    MP_CATALOGO=/data/mp/catalogo.duckdb \
     MP_USAR_AGENT_VAULT=1 \
-    MP_MIN_INTERVALO=1.5
+    MP_MIN_INTERVALO=1.5 \
+    MP_TRANSPORT=streamable-http \
+    MP_HTTP_HOST=0.0.0.0 \
+    MP_HTTP_PORT=8756
 
 VOLUME ["/data/mp"]
 
