@@ -430,12 +430,22 @@ def mp_comprador_catalogo(api, cuota) -> dict:
 
 def mp_cuota_estado(cuota) -> dict:
     """Cuanto queda del techo diario de ChileCompra. No consume cuota."""
-    return {"cuota": cuota.estado(), "meta": {
-        "procedencia": "contador local",
-        "limitaciones": [{
-            "limitacion": (
-                "El contador es local: mide lo que gasto ESTE almacen. Si otro "
-                "cliente usa el mismo ticket, el consumo real contra ChileCompra "
-                "es mayor que este numero."),
-            "severidad": "media",
-            "verificado_por": "MEDIDO 2026-08-12"}]}}
+    est = cuota.estado()
+    lims = [{
+        "limitacion": (
+            "El contador es local: mide lo que gasto ESTE almacen. Si otro "
+            "cliente usa el mismo ticket, el consumo real contra ChileCompra "
+            "es mayor que este numero."),
+        "severidad": "media",
+        "verificado_por": "MEDIDO 2026-08-12"}]
+    # Si el libro mayor no se puede escribir, el numero es indefendible y el
+    # agente tiene que verlo aca, no solo en la documentacion del repo.
+    if not est.get("contador_confiable", True):
+        lims.insert(0, {
+            "limitacion": est.get("ADVERTENCIA", "El libro mayor no es escribible."),
+            "severidad": "alta",
+            "verificado_por": "comprobado al responder esta llamada"})
+    return {"cuota": est, "meta": {
+        "procedencia": ("contador local sobre el libro mayor "
+                        f"{est.get('libro_mayor', {}).get('ledger')}"),
+        "limitaciones": lims}}

@@ -26,7 +26,8 @@ passthrough, solo lectura de DuckDB"*.
 - El cliente HTTP se crea **perezosamente**, al primer uso de una tool viva. Un
   despliegue sin proxy ni ticket sigue sirviendo el snapshot sin romperse; solo
   fallan esas tools, con un error legible.
-- Todo hit pasa por `Cuota`, que aplica el techo diario de 10.000.
+- Todo hit pasa por `Cuota`, que aplica el techo diario de 10.000. El libro
+  mayor que sostiene ese techo estaba roto y se arregló: ver §7.
 - **El ticket sigue viviendo solo en Agent Vault.** El proceso emite
   `__mp_ticket__` y el proxy lo sustituye; nunca lo conoce.
 
@@ -136,12 +137,66 @@ momento del `up`, para no crear copias nuevas en disco. Queda visible en
 
 ---
 
-## 7. Pendientes conocidos
+## 7. El contador de cuota mentía, y por dos motivos
 
-- **`mp_cuota_estado` reporta 0 usados aunque haya hits.** El store del servidor
-  se abre en solo-lectura, así que `Cuota.registrar()` no persiste. El techo se
-  sigue aplicando en la sesión, pero el número que ve el agente **no refleja el
-  consumo real**. Hay que resolverlo antes de confiar en él como presupuesto.
+`mp_cuota_estado` reportaba **0 usados después de gastar cuota real**. Al
+revisarlo aparecieron dos causas independientes, las dos medidas:
+
+1. **El servidor abre los hechos en solo-lectura**, así que `Cuota.registrar()`
+   hacía `return` en silencio. Todo hit de una tool viva se perdía.
+2. **`mp-ingest publicar` borraba el libro mayor.** El comando reemplaza
+   `mp.duckdb` por `mp.next.duckdb` con un rename atómico, y ese archivo se
+   construye desde cero. `[MEDIDO 2026-08-12]` la tabla `cuota_hit` en producción
+   tenía 4.374 filas, **todas de una sola corrida** (06/08 04:16–07:27) y ninguna
+   anterior. El resto de la historia se había ido en publicaciones previas.
+
+La segunda es la que importa: afecta también al lado de la **ingesta**, que sí
+escribe. Después de cada publicación su contador arranca en cero, así que
+`exigir()` deja pasar más hits de los que quedan y el techo de 10.000 se puede
+superar sin que nada avise.
+
+### Por qué el arreglo no fue abrir la base en escritura
+
+Ni eso ni mover el libro mayor a `catalogo.duckdb` sirven:
+
+| Intento | Por qué no |
+|---|---|
+| Abrir `mp.duckdb` en escritura desde el servidor | DuckDB admite **un escritor por archivo**: el servidor le quita el lock a la ingesta. Y el rename sigue borrando la historia |
+| Libro mayor en `catalogo.duckdb` | El servidor se queda con ese lock, y entonces la ingesta —el proceso que más necesita el contador— no puede leerlo |
+
+El libro mayor es ahora un **JSONL de sólo-append, un archivo por día UTC**, en
+`$MP_HOME/data/cuota/` (configurable con `MP_CUOTA_LEDGER`). Sin lock, escribible
+por los dos procesos a la vez, y fuera del snapshot, así que el rename no lo toca.
+Cada línea se escribe con un solo `write` en modo append y por debajo de
+`PIPE_BUF`: dos procesos concurrentes no se entrelazan.
+
+La tabla `cuota_hit` se sigue escribiendo cuando el almacén es escribible, porque
+las sondas **P-03 y P-21** la consultan, pero ya no es la fuente del contador.
+El test verifica que eso **no** produce doble conteo.
+
+### Y si el libro mayor no se puede escribir, se dice
+
+Es lo que faltaba antes: el modo de acceso engañó al contador una vez y nadie se
+enteró. Ahora `estado()` comprueba de verdad que el archivo del día sea
+escribible y publica `contador_confiable`, `hits_anotados_en_esta_sesion` y
+`hits_que_no_se_pudieron_anotar`. Si falla, `mp_cuota_estado` antepone una
+limitación de **severidad alta** con el texto de la advertencia, de modo que el
+agente lo lee en la respuesta y no sólo en este repo. `registrar()` nunca propaga
+el error: la consulta ya se hizo y ya gastó cuota, romperla después no la
+devuelve.
+
+`hits_historicos_en_el_snapshot` se expone aparte y **no** entra en el contador,
+porque se borra en la siguiente publicación.
+
+`test_cuota_persiste.py` cubre los seis casos: persistencia con el almacén en
+solo-lectura, supervivencia al reinicio del proceso, supervivencia a `publicar`,
+ausencia de doble conteo, la declaración del fallo, y la purga por retención
+(7 días) sin tocar la ventana viva.
+
+---
+
+## 8. Pendientes conocidos
+
 - Los cargadores de **OCDS bulk** y **CSV de órdenes de compra** siguen sin
   implementar, a propósito: requieren `--inspect` sobre un archivo real. Adivinar
   nombres de campo es lo que este proyecto no hace.
