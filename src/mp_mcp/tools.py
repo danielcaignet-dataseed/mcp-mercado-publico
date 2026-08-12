@@ -360,9 +360,32 @@ def _meta_vivo(cuota) -> dict:
     }
 
 
+def _error_chilecompra(d: dict) -> str | None:
+    """Detecta el sobre de error que ChileCompra devuelve CON HTTP 2xx.
+
+    MEDIDO 2026-08-12: un ticket ausente o invalido responde HTTP 203 con cuerpo
+    {"Codigo":203,"Mensaje":"Ticket no valido."} y SIN clave `Listado`. Sin esta
+    deteccion, la ausencia de `Listado` se confunde con "no existe" y el agente
+    le afirma al usuario que una licitacion no existe cuando en realidad la
+    consulta nunca se autentico. Distinguir "no hay dato" de "no pude preguntar"
+    no es un detalle: es la diferencia entre informar y mentir.
+    """
+    if "Listado" in d:
+        return None
+    msg = d.get("Mensaje") or d.get("mensaje")
+    if msg:
+        return f"ChileCompra respondio Codigo={d.get('Codigo')}: {msg}"
+    return None
+
+
 def mp_licitacion_vivo(api, cuota, codigo: str) -> dict:
     """Detalle de CUALQUIER licitacion, este o no en el snapshot local."""
     d = api.licitacion(codigo, motivo="mcp-vivo")
+    err = _error_chilecompra(d)
+    if err:
+        return {"error": err, "codigo": codigo,
+                "nota": "NO es que la licitacion no exista: la consulta fallo.",
+                "meta": _meta_vivo(cuota)}
     listado = d.get("Listado") or []
     return {"encontrada": bool(listado), "codigo": codigo,
             "cantidad": d.get("Cantidad"),
@@ -373,6 +396,11 @@ def mp_licitacion_vivo(api, cuota, codigo: str) -> dict:
 def mp_oc_vivo(api, cuota, codigo: str) -> dict:
     """Detalle de una orden de compra: totales, items y proveedor."""
     d = api.orden_compra(codigo, motivo="mcp-vivo")
+    err = _error_chilecompra(d)
+    if err:
+        return {"error": err, "codigo": codigo,
+                "nota": "NO es que la orden no exista: la consulta fallo.",
+                "meta": _meta_vivo(cuota)}
     listado = d.get("Listado") or []
     return {"encontrada": bool(listado), "codigo": codigo,
             "cantidad": d.get("Cantidad"),
@@ -382,15 +410,22 @@ def mp_oc_vivo(api, cuota, codigo: str) -> dict:
 
 def mp_proveedor_resolver(api, cuota, rut: str) -> dict:
     """RUT -> codigo y nombre de empresa proveedora."""
-    return {"rut": rut,
-            "respuesta": api.buscar_proveedor(rut, motivo="mcp-vivo"),
-            "meta": _meta_vivo(cuota)}
+    d = api.buscar_proveedor(rut, motivo="mcp-vivo")
+    err = _error_chilecompra(d)
+    if err:
+        return {"error": err, "rut": rut,
+                "nota": "NO es que el RUT no exista: la consulta fallo.",
+                "meta": _meta_vivo(cuota)}
+    return {"rut": rut, "respuesta": d, "meta": _meta_vivo(cuota)}
 
 
 def mp_comprador_catalogo(api, cuota) -> dict:
     """Catalogo completo de organismos compradores del Estado. Un solo hit."""
-    return {"respuesta": api.buscar_comprador(motivo="mcp-vivo"),
-            "meta": _meta_vivo(cuota)}
+    d = api.buscar_comprador(motivo="mcp-vivo")
+    err = _error_chilecompra(d)
+    if err:
+        return {"error": err, "meta": _meta_vivo(cuota)}
+    return {"respuesta": d, "meta": _meta_vivo(cuota)}
 
 
 def mp_cuota_estado(cuota) -> dict:
