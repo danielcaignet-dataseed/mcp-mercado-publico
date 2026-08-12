@@ -1,6 +1,6 @@
 # Consultas en vivo y el índice de esquema
 
-Estado: **desplegado y verificado en producción el 2026-08-12** (`mp-mcp:0.3.1`).
+Estado: **desplegado y verificado en producción el 2026-08-12** (`mp-mcp:0.3.3`).
 Todo lo marcado `[MEDIDO]` viene de un comando contra la API real con su salida.
 
 ---
@@ -11,7 +11,8 @@ El MCP exponía 8 herramientas y **todas leían el snapshot local**. Un agente s
 sabía lo que hubiera en el último corte: si el usuario preguntaba por una
 licitación publicada después, la respuesta era "no la tengo".
 
-Ahora hay 13. Las cinco nuevas salen a la red.
+Ahora hay 15. Las siete que salen a la red cubren la superficie completa
+de la API v1 menos Compra Ágil: ver §3.
 
 ---
 
@@ -39,11 +40,82 @@ La nota equivalente está en `server.py`, junto al código, no solo acá.
 
 | Tool | Costo | Para qué |
 |---|---|---|
+| `mp_licitaciones_vivo(...)` | 1 hit | **Busca** licitaciones por fecha, estado, organismo y/o proveedor |
+| `mp_ordenes_vivo(...)` | 1 hit | **Busca** órdenes de compra por los mismos cuatro filtros |
 | `mp_licitacion_vivo(codigo)` | 1 hit | Detalle de cualquier licitación del país, esté o no en el snapshot |
 | `mp_oc_vivo(codigo)` | 1 hit | Orden de compra: totales, ítems, proveedor. Única vía mientras `orden_compra` esté vacía |
 | `mp_proveedor_resolver(rut)` | 1 hit | RUT → código y nombre de empresa |
 | `mp_comprador_catalogo()` | 1 hit | Catálogo completo de organismos. `[MEDIDO]` 899 |
 | `mp_cuota_estado()` | 0 | Cuánto queda del techo diario |
+
+### La superficie está completa
+
+`[MEDIDO 2026-08-12]` La documentación oficial expone tres APIs —Licitaciones,
+Órdenes de Compra, Compra Ágil— más dos servicios de catálogo. Excluyendo Compra
+Ágil, son **13 combinaciones endpoint+parámetro, y las 13 están implementadas y
+alcanzables desde una tool**:
+
+| | `codigo` | `fecha` | `estado` | `CodigoOrganismo` | `CodigoProveedor` |
+|---|:--:|:--:|:--:|:--:|:--:|
+| `licitaciones.json` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `ordenesdecompra.json` | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+Más `BuscarProveedor?rut` y `BuscarComprador`. `fecha` y `estado` son combinables
+(medido). `test_superficie_api.py` interpone `_get` y compara el **query string
+exacto** de las 13: un `codigoOrganismo` en minúscula no falla, devuelve el día
+corriente completo y el agente cree que filtró. Eso sólo se detecta así.
+
+**Dos tools, no nueve.** Las nueve combinaciones de listado viven en
+`mp_licitaciones_vivo` y `mp_ordenes_vivo` con cuatro parámetros opcionales cada
+una. Nueve tools separadas habrían sumado ~10 KB al `tools/list` que este mismo
+trabajo recortó un 67%, y no dejarían combinar filtros.
+
+**Valores verificados uno por uno** —los rechazos de la primera sonda eran el
+límite de tasa de P-21, no valores inválidos: mi sonda no respetaba el marcapasos
+de 1,5 s—:
+
+- licitaciones: `activas` 4.533 · `publicada` 190 · `cerrada` 64 · `adjudicada`
+  159 · `desierta` 46 · `revocada` 8 · `suspendida` 1
+- órdenes: `enviadaproveedor` 2.879 · `aceptada` 4.364 · `cancelada` 116 ·
+  `recepcionconforme` 4.857 · `todos` 12.379
+
+### El truncado no es cosmético
+
+`[MEDIDO]` `ordenesdecompra.json?fecha=28072026` devolvió `Cantidad=12265` **y las
+12.265 en el mismo cuerpo: la API no pagina.** Devolver eso a un agente le llena
+la ventana de contexto con una sola llamada. Las tools de listado truncan a 25 por
+omisión, tope 200, y cuando truncan agregan una limitación de **severidad alta**
+que dice que son las primeras en el orden de ChileCompra y **no** una muestra
+representativa — para que nadie calcule un promedio sobre eso.
+
+Sin ningún filtro las tools rechazan la llamada **sin gastar cuota**, porque sin
+filtro la API responde el día corriente entero.
+
+### Dos bugs que sólo aparecieron al medir
+
+**El RUT.** `BuscarProveedor` acepta un solo formato:
+
+| RUT enviado | Respuesta |
+|---|---|
+| `96.756.540-7` | `CodigoEmpresa 47740`, B BRAUN MEDICAL SPA |
+| `96756540-7` | `Codigo 10200` "No hay resultados de empresas." |
+| `96756540` | idem |
+| `967565407` | idem |
+
+`mp_proveedor_resolver` pasaba el RUT sin tocar, así que el formato natural que
+escribe cualquiera daba vacío. Ahora se normaliza. `96756540` es ambiguo —cuerpo
+sin dígito verificador, o `9675654-0`— y se desempata con **módulo 11**, que es un
+checksum verificable: para `9675654` el DV es 2, no 0, así que la lectura correcta
+es el cuerpo completo con DV 7. Si el DV que trae la entrada **no** calza, se
+respeta tal cual y se avisa: corregirlo en silencio consultaría por otra empresa.
+
+**Y el error inverso al de §7.** `Codigo=10200` es una consulta exitosa con cero
+filas, y `_error_chilecompra` la trataba como fallo: el agente recibía
+`"error"` y la nota *"NO es que el RUT no exista: la consulta falló"* cuando la
+consulta había funcionado y el RUT existía. El mismo error del ticket inválido,
+espejado. Además `BuscarProveedor` responde en `listaEmpresas`, no en `Listado`,
+así que sus respuestas válidas caían al camino correcto por casualidad —sólo
+porque no traían `Mensaje`—; ahora `listaEmpresas` es un sobre de éxito explícito.
 
 `[MEDIDO 2026-08-12]` `mp_licitacion_vivo("948355-24-LE26")` devuelve la
 licitación con su adjudicación: 8 oferentes, proveedor ganador y monto unitario
@@ -87,7 +159,8 @@ nombres de campo que no hacen falta hasta elegir la entidad.
 
 ## 5. Filtros de la API que no se usaban
 
-`licitaciones_por_fecha` ahora acepta `estado`, combinable.
+`licitaciones_por_fecha` ahora acepta `estado`, combinable. La superficie completa
+quedo cubierta despues: ver §3.
 
 `[MEDIDO 2026-08-12]`:
 
@@ -96,6 +169,13 @@ nombres de campo que no hacen falta hasta elegir la entidad.
 | `fecha=28072026` | 700 |
 | `fecha=28072026&estado=adjudicada` | **259** |
 | `ordenesdecompra.json?fecha=28072026` | 12.383 |
+
+`[MEDIDO en vivo 2026-08-12, por MCP]` las 9 combinaciones nuevas, con `limite=3`:
+`licitaciones?fecha` 693 · `?estado=adjudicada` 162 · `?fecha&estado` 259 ·
+`?CodigoOrganismo` 2 · `?CodigoProveedor` 0 (filtro aceptado, cero filas) ·
+`ordenesdecompra?fecha` 12.263 · `?estado=aceptada` 4.480 · `?CodigoProveedor` 54 ·
+`?CodigoOrganismo` 325. El `tools/list` pasó de 14.388 a 18.395 bytes por dos
+tools; nueve habrían costado unos 10 KB más.
 
 **Esto explica por qué `adjudicacion_item` estaba vacía**, y no era falta de
 código: el cargador existe en `_upsert_licitacion` y funciona

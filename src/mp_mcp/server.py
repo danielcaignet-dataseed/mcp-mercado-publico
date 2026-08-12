@@ -305,12 +305,74 @@ def mp_oc_vivo(codigo: str) -> str:
 
 
 @mcp.tool(annotations=_RO)
+def mp_licitaciones_vivo(fecha: str | None = None, estado: str | None = None,
+                         codigo_organismo: str | None = None,
+                         codigo_proveedor: str | None = None,
+                         limite: int | None = None) -> str:
+    """BUSCA licitaciones EN VIVO en todo Chile. Los filtros son combinables.
+
+    Es la contraparte de mp_search: mp_search consulta el snapshot (rapido, con
+    todos los campos, pero con fecha de corte) y esto consulta a ChileCompra hoy.
+
+    - `fecha`: un dia, formato ddmmaaaa (28072026). SIN fecha, la API responde
+      sobre el dia corriente.
+    - `estado`: activas, publicada, cerrada, adjudicada, desierta, revocada,
+      suspendida. Los siete verificados 2026-08-12.
+    - `codigo_organismo`: codigo del comprador (mp_comprador_catalogo lo da).
+    - `codigo_proveedor`: CODIGO de empresa, no RUT (mp_proveedor_resolver).
+    - `limite`: cuantas devolver, por omision 25, tope 200.
+
+    Hace falta al menos un filtro. Cuesta 1 hit sea cual sea el tamano del
+    resultado. El listado trae solo 4 campos por licitacion: para monto,
+    comprador o adjudicacion hay que pedir mp_licitacion_vivo por codigo.
+
+    Ejemplo util: fecha='28072026', estado='adjudicada' devolvio 259 -- asi se
+    encuentra que se adjudico un dia sin ingerir nada.
+    """
+    return _run(T.mp_licitaciones_vivo, _api(), _cuota, fecha, estado,
+                codigo_organismo, codigo_proveedor, limite)
+
+
+@mcp.tool(annotations=_RO)
+def mp_ordenes_vivo(fecha: str | None = None, estado: str | None = None,
+                    codigo_organismo: str | None = None,
+                    codigo_proveedor: str | None = None,
+                    limite: int | None = None) -> str:
+    """BUSCA ordenes de compra EN VIVO. Los filtros son combinables.
+
+    Responde "que le compro el Estado a esta empresa" y "que compro este
+    organismo", que el almacen local no puede: su tabla de OC esta vacia.
+
+    - `fecha`: ddmmaaaa. `[MEDIDO]` un dia cualquiera son ~12.000 OC.
+    - `estado`: enviadaproveedor, aceptada, cancelada, recepcionconforme, todos.
+      Los cinco verificados 2026-08-12.
+    - `codigo_organismo` / `codigo_proveedor`: codigos, no nombres ni RUT.
+    - `limite`: por omision 25, tope 200.
+
+    Hace falta al menos un filtro. 1 hit por llamada. El listado trae solo
+    Codigo, Nombre y CodigoEstado -- para totales, items y proveedor hay que
+    pedir mp_oc_vivo por codigo.
+
+    Encadenado tipico: mp_proveedor_resolver(rut) -> codigo_proveedor aca ->
+    mp_oc_vivo del codigo que interese.
+    """
+    return _run(T.mp_ordenes_vivo, _api(), _cuota, fecha, estado,
+                codigo_organismo, codigo_proveedor, limite)
+
+
+@mcp.tool(annotations=_RO)
 def mp_proveedor_resolver(rut: str) -> str:
     """Resuelve un RUT de proveedor a su codigo y nombre de empresa.
 
     ChileCompra identifica proveedores por un codigo interno, no por RUT. Si el
-    usuario te da un RUT y necesitas cruzarlo, esta es la traduccion. Formato con
-    guion y digito verificador, por ejemplo 76123456-7. Cuesta 1 hit.
+    usuario te da un RUT y necesitas cruzarlo, esta es la traduccion. Cuesta 1 hit.
+
+    El RUT se normaliza aca: da igual que escribas 96756540-7, 96.756.540-7 o
+    96756540. `[MEDIDO]` el endpoint solo acepta la forma con puntos y guion, y
+    sin normalizar las otras devuelven vacio.
+
+    `encontrado: false` significa que la empresa no esta inscrita como proveedor
+    del Estado, no que no exista.
     """
     return _run(T.mp_proveedor_resolver, _api(), _cuota, rut)
 

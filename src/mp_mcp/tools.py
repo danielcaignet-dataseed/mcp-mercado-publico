@@ -1,4 +1,7 @@
-"""Las 7 herramientas. Agnosticas de rubro y de producto.
+"""Las herramientas. Agnosticas de rubro y de producto.
+
+Ocho leen el snapshot local y siete salen a la red: la superficie completa de la
+API v1 de ChileCompra menos Compra Agil, excluida a proposito.
 
 Nada de perfiles de mercado, dossiers ni watchlists: eso es capa de producto
 (SPEC-001 §6). Aca solo hay acceso a datos.
@@ -360,6 +363,16 @@ def _meta_vivo(cuota) -> dict:
     }
 
 
+# Sobres de exito. `BuscarProveedor` no usa `Listado` sino `listaEmpresas`:
+# omitirlo hacia que una respuesta valida cayera al camino de error por suerte,
+# solo porque no traia `Mensaje`.
+_SOBRES_OK = ("Listado", "listaEmpresas")
+
+# "No hay resultados de empresas." La consulta se hizo, se autentico y devolvio
+# cero filas. Es un resultado vacio, NO un fallo. MEDIDO 2026-08-12.
+_CODIGO_SIN_RESULTADOS = 10200
+
+
 def _error_chilecompra(d: dict) -> str | None:
     """Detecta el sobre de error que ChileCompra devuelve CON HTTP 2xx.
 
@@ -369,9 +382,19 @@ def _error_chilecompra(d: dict) -> str | None:
     le afirma al usuario que una licitacion no existe cuando en realidad la
     consulta nunca se autentico. Distinguir "no hay dato" de "no pude preguntar"
     no es un detalle: es la diferencia entre informar y mentir.
+
+    Y la simetria tambien importa: `Codigo=10200` ("No hay resultados de
+    empresas") es una consulta EXITOSA con cero filas. Tratarla como error
+    invierte el mismo error hacia el otro lado -- el agente diria "no pude
+    preguntar" cuando preguntó bien y la respuesta es que no hay.
     """
-    if "Listado" in d:
+    if any(k in d for k in _SOBRES_OK):
         return None
+    try:
+        if int(d.get("Codigo") or 0) == _CODIGO_SIN_RESULTADOS:
+            return None
+    except (TypeError, ValueError):
+        pass
     msg = d.get("Mensaje") or d.get("mensaje")
     if msg:
         return f"ChileCompra respondio Codigo={d.get('Codigo')}: {msg}"
@@ -409,14 +432,143 @@ def mp_oc_vivo(api, cuota, codigo: str) -> dict:
 
 
 def mp_proveedor_resolver(api, cuota, rut: str) -> dict:
-    """RUT -> codigo y nombre de empresa proveedora."""
+    """RUT -> codigo y nombre de empresa proveedora.
+
+    El codigo que devuelve es lo que piden `codigo_proveedor` en
+    mp_licitaciones_vivo y mp_ordenes_vivo: la API no filtra por RUT.
+    """
+    from .api import dv_calza, normalizar_rut
     d = api.buscar_proveedor(rut, motivo="mcp-vivo")
     err = _error_chilecompra(d)
     if err:
         return {"error": err, "rut": rut,
                 "nota": "NO es que el RUT no exista: la consulta fallo.",
                 "meta": _meta_vivo(cuota)}
-    return {"rut": rut, "respuesta": d, "meta": _meta_vivo(cuota)}
+    empresas = d.get("listaEmpresas") or d.get("Listado") or []
+    e = empresas[0] if empresas else {}
+    out = {
+        "rut_consultado": rut,
+        "rut_enviado_a_la_api": normalizar_rut(rut),
+        "encontrado": bool(empresas),
+        "codigo_empresa": e.get("CodigoEmpresa"),
+        "nombre_empresa": e.get("NombreEmpresa"),
+        "coincidencias": len(empresas),
+        "meta": _meta_vivo(cuota),
+    }
+    if not empresas:
+        out["nota"] = ("La consulta se hizo bien y ChileCompra respondio que no hay "
+                       "empresa con ese RUT en su registro de proveedores. Eso NO "
+                       "significa que la empresa no exista: significa que no esta "
+                       "inscrita como proveedor del Estado.")
+        if dv_calza(rut) is False:
+            out["nota"] += (" ADEMAS el digito verificador no calza con el cuerpo "
+                            "del RUT: revisa si hay un error de tipeo antes de "
+                            "concluir algo. No se corrigio por cuenta propia.")
+    return out
+
+
+# Tope duro de items devueltos. NO es una preferencia de estilo:
+# [MEDIDO 2026-08-12] ordenesdecompra.json?fecha=28072026 devolvio Cantidad=12265
+# y las 12.265 en el MISMO cuerpo -- la API no pagina. Devolver eso a un agente
+# le llena la ventana de contexto con una sola llamada.
+_LIMITE_DEF = 25
+_LIMITE_MAX = 200
+
+_ESTADOS_LICITACION = ("activas", "publicada", "cerrada", "adjudicada",
+                       "desierta", "revocada", "suspendida")
+_ESTADOS_OC = ("enviadaproveedor", "aceptada", "cancelada",
+               "recepcionconforme", "todos")
+
+
+def _listado_vivo(api, cuota, *, que: str, fecha, estado, codigo_organismo,
+                  codigo_proveedor, limite) -> dict:
+    """Cuerpo comun de las dos tools de listado en vivo.
+
+    Exige al menos un filtro. Sin ninguno, la API responde sobre el dia corriente
+    completo, que son decenas de miles de filas: es una llamada que un agente no
+    quiere hacer sin saberlo.
+    """
+    if not any((fecha, estado, codigo_organismo, codigo_proveedor)):
+        validos = _ESTADOS_LICITACION if que == "licitaciones" else _ESTADOS_OC
+        return {"error": "Hace falta al menos un filtro.",
+                "nota": (f"Sin filtro la API responde el dia corriente completo "
+                         f"(MEDIDO: hasta 12.265 filas en un solo cuerpo). Para "
+                         f"'lo de hoy' usa estado='{validos[0]}'. Filtros: fecha "
+                         f"(ddmmaaaa), estado, codigo_organismo, codigo_proveedor; "
+                         f"son combinables."),
+                "estados_validos": list(validos)}
+
+    n = _LIMITE_DEF if limite is None else max(1, min(int(limite), _LIMITE_MAX))
+    if que == "licitaciones":
+        d = api.licitaciones_listado(fecha=fecha, estado=estado,
+                                     codigo_organismo=codigo_organismo,
+                                     codigo_proveedor=codigo_proveedor,
+                                     motivo="mcp-vivo")
+        clave, campos = "licitaciones", "CodigoExterno, Nombre, CodigoEstado, FechaCierre"
+        detalle = "mp_licitacion_vivo(codigo)"
+    else:
+        d = api.ordenes_listado(fecha=fecha, estado=estado,
+                                codigo_organismo=codigo_organismo,
+                                codigo_proveedor=codigo_proveedor,
+                                motivo="mcp-vivo")
+        clave, campos = "ordenes_compra", "Codigo, Nombre, CodigoEstado"
+        detalle = "mp_oc_vivo(codigo)"
+
+    err = _error_chilecompra(d)
+    if err:
+        return {"error": err,
+                "nota": "NO es que no haya resultados: la consulta fallo.",
+                "meta": _meta_vivo(cuota)}
+
+    todas = d.get("Listado") or []
+    devueltas = todas[:n]
+    truncado = len(todas) > len(devueltas)
+
+    meta = _meta_vivo(cuota)
+    meta["limitaciones"] = list(meta["limitaciones"]) + [{
+        "limitacion": (
+            f"El listado trae solo {campos}. Ni monto, ni comprador, ni "
+            f"proveedor, ni items: para eso hay que pedir el detalle con "
+            f"{detalle}, y cuesta 1 hit por codigo."),
+        "severidad": "media",
+        "verificado_por": "MEDIDO 2026-08-12"}]
+    if truncado:
+        meta["limitaciones"].append({
+            "limitacion": (
+                f"Se devolvieron {len(devueltas)} de {len(todas)}. Son las "
+                f"PRIMERAS en el orden que entrega ChileCompra, NO una muestra "
+                f"representativa: no calcules estadisticas sobre esto ni digas "
+                f"'las mas grandes'. Para el universo, acota el filtro o subi "
+                f"`limite` (tope {_LIMITE_MAX})."),
+            "severidad": "alta",
+            "verificado_por": "determinado por el truncado de esta respuesta"})
+
+    return {
+        "filtros": {k: v for k, v in (("fecha", fecha), ("estado", estado),
+                                      ("codigo_organismo", codigo_organismo),
+                                      ("codigo_proveedor", codigo_proveedor)) if v},
+        "cantidad_total": d.get("Cantidad"),
+        "devueltas": len(devueltas),
+        "truncado": truncado,
+        clave: devueltas,
+        "meta": meta,
+    }
+
+
+def mp_licitaciones_vivo(api, cuota, fecha=None, estado=None, codigo_organismo=None,
+                         codigo_proveedor=None, limite=None) -> dict:
+    """Listado de licitaciones EN VIVO. Los cuatro filtros son combinables."""
+    return _listado_vivo(api, cuota, que="licitaciones", fecha=fecha, estado=estado,
+                         codigo_organismo=codigo_organismo,
+                         codigo_proveedor=codigo_proveedor, limite=limite)
+
+
+def mp_ordenes_vivo(api, cuota, fecha=None, estado=None, codigo_organismo=None,
+                    codigo_proveedor=None, limite=None) -> dict:
+    """Listado de ordenes de compra EN VIVO. Los cuatro filtros son combinables."""
+    return _listado_vivo(api, cuota, que="ordenes", fecha=fecha, estado=estado,
+                         codigo_organismo=codigo_organismo,
+                         codigo_proveedor=codigo_proveedor, limite=limite)
 
 
 def mp_comprador_catalogo(api, cuota) -> dict:
