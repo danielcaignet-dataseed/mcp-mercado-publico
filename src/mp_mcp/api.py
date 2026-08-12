@@ -145,12 +145,52 @@ class ClienteAPI:
         """Listado. Devuelve solo 4 campos por licitacion (verificado por P-01)."""
         return self._get("publico/licitaciones.json", {"estado": estado}, motivo)
 
-    def licitaciones_por_fecha(self, fecha_ddmmaaaa: str, motivo="ingesta") -> dict:
-        return self._get("publico/licitaciones.json", {"fecha": fecha_ddmmaaaa}, motivo)
+    def licitaciones_por_fecha(self, fecha_ddmmaaaa: str, estado: str | None = None,
+                               motivo="ingesta") -> dict:
+        """Listado de un dia. `estado` es combinable con `fecha`.
+
+        MEDIDO 2026-08-12: fecha=28072026 devuelve 700 licitaciones; con
+        estado=adjudicada devuelve 259. Sin `fecha`, el endpoint responde sobre
+        el dia corriente, y por eso estado=adjudicada a secas da Cantidad=0:
+        no es que no existan, es que hoy no hay.
+        """
+        params: dict[str, str] = {"fecha": fecha_ddmmaaaa}
+        if estado:
+            params["estado"] = estado
+        return self._get("publico/licitaciones.json", params, motivo)
+
+    def licitaciones_por_organismo(self, codigo_organismo: str,
+                                   motivo="ingesta") -> dict:
+        """Filtro documentado por ChileCompra que la ingesta no usaba."""
+        return self._get("publico/licitaciones.json",
+                         {"CodigoOrganismo": codigo_organismo}, motivo)
+
+    def licitaciones_por_proveedor(self, codigo_proveedor: str,
+                                   motivo="ingesta") -> dict:
+        """Licitaciones en las que participa un proveedor (codigo, no RUT)."""
+        return self._get("publico/licitaciones.json",
+                         {"CodigoProveedor": codigo_proveedor}, motivo)
 
     def licitacion(self, codigo: str, motivo="on-demand") -> dict:
         """Detalle. Unica fuente de Items/UNSPSC, monto, comprador y fechas."""
         return self._get("publico/licitaciones.json", {"codigo": codigo}, motivo)
+
+    # -- ordenes de compra --------------------------------------------------
+
+    def orden_compra(self, codigo: str, motivo="on-demand") -> dict:
+        """Detalle de una OC: totales, items, proveedor y fechas de la orden."""
+        return self._get("publico/ordenesdecompra.json", {"codigo": codigo}, motivo)
+
+    # -- catalogo de empresas ----------------------------------------------
+
+    def buscar_proveedor(self, rut: str, motivo="on-demand") -> dict:
+        """RUT -> codigo y nombre de empresa proveedora."""
+        return self._get("Publico/Empresas/BuscarProveedor",
+                         {"rutempresaproveedor": rut}, motivo)
+
+    def buscar_comprador(self, motivo="on-demand") -> dict:
+        """Catalogo completo de organismos compradores. Un solo hit."""
+        return self._get("Publico/Empresas/BuscarComprador", {}, motivo)
 
     def ordenes_por_fecha(self, fecha_ddmmaaaa: str, motivo="ingesta") -> dict:
         return self._get("publico/ordenesdecompra.json", {"fecha": fecha_ddmmaaaa}, motivo)

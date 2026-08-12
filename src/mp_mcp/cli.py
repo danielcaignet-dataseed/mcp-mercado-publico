@@ -183,8 +183,8 @@ def cmd_live_listado(a) -> None:
     cfg = Config.from_env()
     store = Store(cfg)
     cli = ClienteAPI(cfg, Cuota(store))
-    d = (cli.licitaciones_por_fecha(a.fecha) if a.fecha
-         else cli.licitaciones_por_estado(a.estado))
+    d = (cli.licitaciones_por_fecha(a.fecha, a.estado) if a.fecha
+         else cli.licitaciones_por_estado(a.estado or "activas"))
     codigos = [x.get("CodigoExterno") for x in (d.get("Listado") or [])]
     print(f"listado: {len(codigos)} licitaciones (Cantidad={d.get('Cantidad')})")
 
@@ -506,7 +506,13 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("live-listado", help="listado del dia + detalle de cada una")
-    p.add_argument("--estado", default="activas")
+    p.add_argument("--estado", default=None,
+                   help="activas|Publicada|Cerrada|Adjudicada|Desierta|Revocada|"
+                        "Suspendida|todos. Por defecto 'activas'. SE COMBINA con "
+                        "--fecha: '--fecha 28072026 --estado adjudicada' devuelve "
+                        "las adjudicadas de ese dia (MEDIDO 2026-08-12: 259). Sin "
+                        "--fecha el endpoint responde sobre el dia corriente, por "
+                        "eso '--estado adjudicada' a secas da 0.")
     p.add_argument("--fecha", help="ddmmaaaa")
     p.add_argument("--solo-listado", action="store_true")
     p.add_argument("--limite", type=int,

@@ -61,6 +61,25 @@ def mp_schema_describe(store: Store, entity: str | None = None,
         return _error(f"'{entity}' no es una entidad. Validas: {', '.join(ENTIDADES)}.")
     d = describe(entity, incluir_limitaciones)
     d["estado_almacen"] = store.as_of()
+    # Indice por defecto: sin `entity` se devuelve el catalogo de entidades con
+    # su grano, su estado y sus limitaciones COMPLETAS, pero sin el detalle
+    # columna por columna. El detalle se pide por entidad.
+    #
+    # Las limitaciones NUNCA se omiten: son la fuente de honestidad del agente y
+    # recortarlas seria cambiar contexto por confiabilidad. Lo que se omite son
+    # nombres de campo que el agente no necesita hasta elegir la entidad.
+    # MEDIDO 2026-08-12: el payload completo son 24.426 bytes, de los cuales
+    # 23.516 son `entidades`; el indice baja eso ~45 %.
+    if entity is None:
+        for _n, _e in d.get("entidades", {}).items():
+            _dims = _e.pop("dimensiones", {}) or {}
+            _meds = _e.pop("medidas", {}) or {}
+            _e.pop("atributos", None)
+            _e["detalle"] = (
+                f"{len(_dims)} dimensiones, {len(_meds)} medidas. "
+                f"Llama mp_schema_describe(entity='{_n}') "
+                "para los nombres exactos de campo."
+            )
     d["nota_de_uso"] = (
         "Llama esta herramienta antes de construir una consulta. Los nombres de "
         "campo no se adivinan: si un campo no aparece aca, no existe. Las "
@@ -308,3 +327,80 @@ def mp_query_run(store: Store, cuota: Cuota, ref: str,
 def mp_query_list(store: Store, etiqueta: str | None = None) -> dict:
     return {"data": store.listar_consultas(etiqueta),
             "meta": {"nota": "Biblioteca de consultas. Ver seeds/consultas.yaml."}}
+
+
+# --------------------------------------------------------------------------
+# 9. Consultas EN VIVO a la API de ChileCompra
+#
+# Son las UNICAS funciones de este modulo que salen a la red; el resto lee el
+# snapshot local. Devuelven la respuesta de la API tal cual: re-mapear los
+# campos aca crearia una segunda definicion que puede divergir de la capa
+# semantica, y este proyecto tiene una sola fuente de verdad por diseno.
+#
+# Cada llamada consume cuota real de ChileCompra (techo 10.000/dia por ticket).
+# --------------------------------------------------------------------------
+
+_LIM_VIVO = [{
+    "limitacion": (
+        "Respuesta cruda de la API v1: los nombres de campo son los del "
+        "proveedor del dato (CodigoExterno, MontoUnitario, RutProveedor), NO los "
+        "de la capa semantica del almacen. No mezclar con salidas de mp_search o "
+        "mp_aggregate sin normalizar."),
+    "severidad": "media",
+    "verificado_por": "MEDIDO 2026-08-12",
+}]
+
+
+def _meta_vivo(cuota) -> dict:
+    return {
+        "procedencia": "api-live",
+        "as_of": "consulta en vivo a ChileCompra; NO proviene del snapshot local",
+        "cuota": cuota.estado(),
+        "limitaciones": _LIM_VIVO,
+    }
+
+
+def mp_licitacion_vivo(api, cuota, codigo: str) -> dict:
+    """Detalle de CUALQUIER licitacion, este o no en el snapshot local."""
+    d = api.licitacion(codigo, motivo="mcp-vivo")
+    listado = d.get("Listado") or []
+    return {"encontrada": bool(listado), "codigo": codigo,
+            "cantidad": d.get("Cantidad"),
+            "licitacion": listado[0] if listado else None,
+            "meta": _meta_vivo(cuota)}
+
+
+def mp_oc_vivo(api, cuota, codigo: str) -> dict:
+    """Detalle de una orden de compra: totales, items y proveedor."""
+    d = api.orden_compra(codigo, motivo="mcp-vivo")
+    listado = d.get("Listado") or []
+    return {"encontrada": bool(listado), "codigo": codigo,
+            "cantidad": d.get("Cantidad"),
+            "orden_compra": listado[0] if listado else None,
+            "meta": _meta_vivo(cuota)}
+
+
+def mp_proveedor_resolver(api, cuota, rut: str) -> dict:
+    """RUT -> codigo y nombre de empresa proveedora."""
+    return {"rut": rut,
+            "respuesta": api.buscar_proveedor(rut, motivo="mcp-vivo"),
+            "meta": _meta_vivo(cuota)}
+
+
+def mp_comprador_catalogo(api, cuota) -> dict:
+    """Catalogo completo de organismos compradores del Estado. Un solo hit."""
+    return {"respuesta": api.buscar_comprador(motivo="mcp-vivo"),
+            "meta": _meta_vivo(cuota)}
+
+
+def mp_cuota_estado(cuota) -> dict:
+    """Cuanto queda del techo diario de ChileCompra. No consume cuota."""
+    return {"cuota": cuota.estado(), "meta": {
+        "procedencia": "contador local",
+        "limitaciones": [{
+            "limitacion": (
+                "El contador es local: mide lo que gasto ESTE almacen. Si otro "
+                "cliente usa el mismo ticket, el consumo real contra ChileCompra "
+                "es mayor que este numero."),
+            "severidad": "media",
+            "verificado_por": "MEDIDO 2026-08-12"}]}}

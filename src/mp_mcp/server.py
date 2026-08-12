@@ -40,8 +40,18 @@ _RO = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=Fa
 _RW = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
                       idempotentHint=True, openWorldHint=False)
 
-# El servidor MCP NO llama a la API y NO escribe los hechos: solo consulta.
-# MP_MCP_ESCRITURA=1 solo para desarrollo local con un unico proceso.
+# El servidor NO escribe los hechos. MP_MCP_ESCRITURA=1 solo para desarrollo
+# local con un unico proceso.
+#
+# CAMBIO DE POSTURA 2026-08-12: hasta hoy este servidor no salia a la red, y esa
+# propiedad estaba documentada como control de seguridad ("el MCP no expone
+# ninguna herramienta que haga HTTP"). Ya no es cierta: las tools *_vivo llaman a
+# ChileCompra. El cambio se toma a conciencia y se acota asi:
+#   - el cliente HTTP se crea PEREZOSAMENTE, al primer uso de una tool viva;
+#   - un despliegue sin proxy ni ticket sigue sirviendo el snapshot sin romperse,
+#     y solo esas tools fallan, con un error legible;
+#   - todo hit pasa por Cuota, que aplica el techo diario;
+#   - el ticket sigue viviendo en Agent Vault: el proceso nunca lo conoce.
 _cfg = Config.from_env()
 _solo_lectura = os.environ.get("MP_MCP_ESCRITURA", "").lower() not in ("1", "true", "yes")
 _store = Store(_cfg, read_only=_solo_lectura)
@@ -67,8 +77,14 @@ def mp_schema_describe(entity: str | None = None,
     """Devuelve que se puede consultar: entidades, dimensiones, medidas y sus
     limitaciones conocidas.
 
-    LLAMA ESTO PRIMERO. Los nombres de campo no se adivinan; si un campo no
-    aparece aca, no existe y la consulta va a fallar.
+    LLAMA ESTO PRIMERO sin argumentos: devuelve el INDICE de entidades con su
+    grano, su estado de carga y sus limitaciones. El indice NO trae nombres de
+    campo.
+
+    Despues, para la entidad que vas a consultar, llama de nuevo con
+    entity='<nombre>': ahi vienen los nombres exactos de dimensiones y medidas.
+    Los nombres de campo no se adivinan; si un campo no aparece en el detalle de
+    SU entidad, no existe y la consulta va a fallar.
 
     Cada entidad declara su 'grano' (que representa una fila). Respetarlo es
     critico: sumar un monto de cabecera sobre 'licitacion_item' lo multiplica por
@@ -239,3 +255,84 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# --------------------------------------------------------------------------
+# Tools EN VIVO. Ver la nota de "CAMBIO DE POSTURA" arriba antes de agregar mas.
+# --------------------------------------------------------------------------
+
+_api_cliente = None
+
+
+def _api():
+    """Cliente HTTP creado al primer uso de una tool viva (perezoso a proposito)."""
+    global _api_cliente
+    if _api_cliente is None:
+        from .api import ClienteAPI
+        _api_cliente = ClienteAPI(_cfg, _cuota)
+    return _api_cliente
+
+
+@mcp.tool(annotations=_RO)
+def mp_licitacion_vivo(codigo: str) -> str:
+    """Detalle de una licitacion consultando ChileCompra EN VIVO.
+
+    Usala cuando el codigo no esta en el almacen local (mp_get devolvio vacio) o
+    cuando necesitas el estado de HOY de algo que el snapshot tiene viejo. El
+    almacen es una foto con fecha; esto no.
+
+    Cuesta 1 hit del techo diario de 10.000. Si vas a mirar muchas licitaciones,
+    consulta antes mp_cuota_estado.
+
+    Los nombres de campo son los de ChileCompra (CodigoExterno, MontoUnitario,
+    RutProveedor), NO los del almacen. No los mezcles con salidas de mp_search o
+    mp_aggregate sin normalizar primero.
+    """
+    return _run(T.mp_licitacion_vivo, _api(), _cuota, codigo)
+
+
+@mcp.tool(annotations=_RO)
+def mp_oc_vivo(codigo: str) -> str:
+    """Detalle de una ORDEN DE COMPRA consultando ChileCompra en vivo.
+
+    Es la unica via para ver totales, items y proveedor de una OC: el almacen
+    local todavia no tiene esa tabla poblada. Codigo con formato 2097-241-SE14.
+
+    Cuesta 1 hit. Sirve para responder "cuanto se pago finalmente" de un caso
+    puntual, no para benchmarks: para eso hace falta la ingesta masiva.
+    """
+    return _run(T.mp_oc_vivo, _api(), _cuota, codigo)
+
+
+@mcp.tool(annotations=_RO)
+def mp_proveedor_resolver(rut: str) -> str:
+    """Resuelve un RUT de proveedor a su codigo y nombre de empresa.
+
+    ChileCompra identifica proveedores por un codigo interno, no por RUT. Si el
+    usuario te da un RUT y necesitas cruzarlo, esta es la traduccion. Formato con
+    guion y digito verificador, por ejemplo 76123456-7. Cuesta 1 hit.
+    """
+    return _run(T.mp_proveedor_resolver, _api(), _cuota, rut)
+
+
+@mcp.tool(annotations=_RO)
+def mp_comprador_catalogo() -> str:
+    """Catalogo COMPLETO de organismos compradores del Estado. Un solo hit.
+
+    El almacen local solo conoce los organismos que aparecieron en las
+    licitaciones ingeridas. Esto trae todos, sirve para resolver nombres que no
+    estan en el snapshot y para ofrecer opciones cuando el usuario nombra un
+    organismo de forma ambigua.
+    """
+    return _run(T.mp_comprador_catalogo, _api(), _cuota)
+
+
+@mcp.tool(annotations=_RO)
+def mp_cuota_estado() -> str:
+    """Cuanto queda del techo diario de ChileCompra. NO consume cuota.
+
+    Consultala antes de una tanda de llamadas vivas. El contador es local: mide
+    lo que gasto este almacen, asi que si otro cliente comparte el ticket el
+    consumo real es mayor.
+    """
+    return _run(T.mp_cuota_estado, _cuota)
