@@ -539,7 +539,11 @@ def _listado_vivo(api, cuota, *, que: str, fecha, estado, codigo_organismo,
                 f"PRIMERAS en el orden que entrega ChileCompra, NO una muestra "
                 f"representativa: no calcules estadisticas sobre esto ni digas "
                 f"'las mas grandes'. Para el universo, acota el filtro o subi "
-                f"`limite` (tope {_LIMITE_MAX})."),
+                f"`limite` (tope {_LIMITE_MAX}). "
+                f"IMPORTANTE al citarlo: el recorte lo hace ESTA tool para no "
+                f"llenarte el contexto, NO ChileCompra -- su API devuelve todo "
+                f"junto y sin paginar. No le atribuyas a ChileCompra un limite "
+                f"de {_LIMITE_MAX} que no tiene."),
             "severidad": "alta",
             "verificado_por": "determinado por el truncado de esta respuesta"})
 

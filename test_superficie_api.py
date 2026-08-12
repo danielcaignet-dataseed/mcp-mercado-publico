@@ -218,6 +218,13 @@ if r["devueltas"] != 25 or not r["truncado"]:
 sev = [x["severidad"] for x in r["meta"]["limitaciones"]]
 if "alta" not in sev:
     fallos.append("un resultado truncado no declara limitacion de severidad alta")
+# Demeter leyo el aviso de truncado y le atribuyo el tope a ChileCompra, que no
+# lo tiene. El payload tiene que decir de quien es el recorte.
+texto_trunc = " ".join(x["limitacion"] for x in r["meta"]["limitaciones"]
+                       if x["severidad"] == "alta")
+if "ESTA tool" not in texto_trunc or "sin paginar" not in texto_trunc:
+    fallos.append("el aviso de truncado no aclara que el recorte es de la tool, "
+                  "no de ChileCompra")
 if r["cantidad_total"] != 12265:
     fallos.append("cantidad_total no refleja el universo de la API")
 
