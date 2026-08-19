@@ -1,6 +1,6 @@
 # Consultas en vivo y el índice de esquema
 
-Estado: **desplegado y verificado en producción el 2026-08-12** (`mp-mcp:0.3.3`).
+Estado: **desplegado y verificado en producción el 2026-08-12** (`mp-mcp:0.3.5`).
 Todo lo marcado `[MEDIDO]` viene de un comando contra la API real con su salida.
 
 ---
@@ -11,7 +11,7 @@ El MCP exponía 8 herramientas y **todas leían el snapshot local**. Un agente s
 sabía lo que hubiera en el último corte: si el usuario preguntaba por una
 licitación publicada después, la respuesta era "no la tengo".
 
-Ahora hay 15. Las siete que salen a la red cubren la superficie completa
+Ahora hay 16. Las siete que salen a la red cubren la superficie completa
 de la API v1 menos Compra Ágil: ver §3.
 
 ---
@@ -46,6 +46,7 @@ La nota equivalente está en `server.py`, junto al código, no solo acá.
 | `mp_oc_vivo(codigo)` | 1 hit | Orden de compra: totales, ítems, proveedor. Única vía mientras `orden_compra` esté vacía |
 | `mp_proveedor_resolver(rut)` | 1 hit | RUT → código y nombre de empresa |
 | `mp_comprador_catalogo()` | 1 hit | Catálogo completo de organismos. `[MEDIDO]` 899 |
+| `mp_volcado_leer(...)` | **0** | Pagina y filtra un listado ya volcado. No sale a la red |
 | `mp_cuota_estado()` | 0 | Cuánto queda del techo diario |
 
 ### La superficie está completa
@@ -79,14 +80,68 @@ de 1,5 s—:
 - órdenes: `enviadaproveedor` 2.879 · `aceptada` 4.364 · `cancelada` 116 ·
   `recepcionconforme` 4.857 · `todos` 12.379
 
-### El truncado no es cosmético
+### El truncado no es cosmético, y no corta lo que se analiza
 
-`[MEDIDO]` `ordenesdecompra.json?fecha=28072026` devolvió `Cantidad=12265` **y las
-12.265 en el mismo cuerpo: la API no pagina.** Devolver eso a un agente le llena
-la ventana de contexto con una sola llamada. Las tools de listado truncan a 25 por
-omisión, tope 200, y cuando truncan agregan una limitación de **severidad alta**
-que dice que son las primeras en el orden de ChileCompra y **no** una muestra
-representativa — para que nadie calcule un promedio sobre eso.
+`[MEDIDO 2026-08-12]` `ordenesdecompra.json?fecha=28072026` devolvió `Cantidad=12265`
+**y las 12.265 en el mismo cuerpo: la API no pagina.** Son **1,47 MB ≈ 384.000
+tokens** en una sola respuesta de tool. No hay contexto que lo aguante.
+
+La objeción obvia es *"¿y entonces cómo se analiza algo truncado?"*. La respuesta
+son dos cosas distintas:
+
+**1. Los agregados no se truncan.** `cantidad_total` viene del `Cantidad` de la
+API, y `conteo_por_codigo_estado` se calcula sobre **todas** las filas que llegaron,
+no sobre las que se devuelven. `[MEDIDO en vivo 2026-08-19, por MCP]`:
+
+```
+cantidad_total=11681  devueltas=25  conteo_calculado_sobre=11681
+por codigo_estado: {'12': 7774, '6': 3478, '9': 223, '5': 19, '4': 187}  suma=11681
+bytes de la respuesta: 6187
+```
+
+25 filas a la vista y los conteos cubren las 11.681. Para *"cuántas hay"*,
+*"cuántas por estado"*, *"cuántas de este proveedor"* no falta nada.
+
+**2. Para las filas hay `volcar=true`.** Guarda el listado completo en el almacén
+y devuelve sólo el conteo:
+
+```
+volcado: filas=11681 tabla=listado_vivo error=None
+bytes de la respuesta: 6756   (mandar las 11.681 crudas: ~1.500.000)
+```
+
+Después se pagina y filtra con `mp_volcado_leer`, **sin gastar cuota**
+`[MEDIDO en vivo 2026-08-19]`:
+
+| Consulta local | Coinciden | Contra la API |
+|---|---|---|
+| todas | 11.681 | 11.681 ✅ |
+| `texto='combustible'` | 53 | — |
+| `texto='medicamento'` | 101 | — |
+| `texto='servicio'` | 1.212 | — |
+| `codigo_estado=12` | 7.774 | 7.774 ✅ |
+| `codigo_estado=6` | 3.478 | 3.478 ✅ |
+| `codigo_estado=9` | 223 | 223 ✅ |
+
+**Siete lecturas, 0 hits de cuota** (contador 2 → 2). Un volcado cuesta 1 hit y
+después se recorre gratis cuantas veces haga falta.
+
+El volcado va a `catalogo.duckdb`, **no** a los hechos: es la única base que el
+servidor abre en escritura —los hechos están en solo-lectura para no quitarle el
+lock a la ingesta— y además `publicar` reemplaza los hechos con un rename, así que
+lo que viviera ahí se borraría en la siguiente publicación. Es el mismo
+razonamiento que el del libro mayor de cuota (§7). Re-volcar la misma consulta
+**reemplaza**: es una foto de esa pregunta, no una bitácora que crece sin techo.
+
+Cuando truncan, las tools agregan una limitación de **severidad alta** que ofrece
+`volcar=true` como la salida buena, aclara que las devueltas son las primeras en el
+orden de ChileCompra y **no** una muestra representativa, y que **el recorte es de
+la tool, no de ChileCompra** — Demeter se lo atribuyó a ChileCompra en la primera
+validación y hubo que decirlo en el payload.
+
+Lo que sigue faltando **no es el truncado**: el listado de la API trae `Codigo`,
+`Nombre` y `CodigoEstado`, **cero campos de monto**. Con las 11.681 filas completas
+no se calcula un peso. Para plata hace falta el detalle, 1 hit por código.
 
 Sin ningún filtro las tools rechazan la llamada **sin gastar cuota**, porque sin
 filtro la API responde el día corriente entero.

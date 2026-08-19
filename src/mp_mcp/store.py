@@ -184,6 +184,80 @@ class Store:
             "UPDATE consulta_guardada SET ultima_corrida = ? WHERE query_id = ?",
             [datetime.now(timezone.utc), query_id])
 
+    # -- volcado de listados en vivo ---------------------------------------
+
+    _DDL_VOLCADO = """
+        CREATE TABLE IF NOT EXISTS listado_vivo (
+            capturado_en TIMESTAMP, tipo VARCHAR, filtros VARCHAR,
+            codigo VARCHAR, nombre VARCHAR, codigo_estado INTEGER,
+            fecha_cierre VARCHAR)"""
+
+    def volcar_listado(self, tipo: str, filtros: str, filas: list) -> dict:
+        """Guarda un listado en vivo COMPLETO en el catalogo, no en los hechos.
+
+        Va al catalogo porque es la unica base que el servidor MCP abre en
+        escritura -- los hechos estan en solo-lectura para no quitarle el lock a
+        la ingesta -- y porque `mp-ingest publicar` los reemplaza con un rename,
+        asi que lo que viviera ahi se borraria en la siguiente publicacion. Es el
+        mismo razonamiento que el del libro mayor de cuota (ver quota.py).
+
+        Reemplaza el volcado anterior de la MISMA consulta: es una foto de esa
+        pregunta, no una bitacora que crece sin techo.
+        """
+        con = self.cat
+        con.execute(self._DDL_VOLCADO)
+        con.execute("DELETE FROM listado_vivo WHERE tipo = ? AND filtros = ?",
+                    [tipo, filtros])
+        ts = datetime.now(timezone.utc)
+        for f in filas:
+            con.execute(
+                "INSERT INTO listado_vivo VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [ts, tipo, filtros,
+                 f.get("CodigoExterno") or f.get("Codigo"),
+                 f.get("Nombre"),
+                 f.get("CodigoEstado"),
+                 str(f.get("FechaCierre")) if f.get("FechaCierre") else None])
+        return {"tabla": "listado_vivo", "tipo": tipo, "filtros": filtros,
+                "filas": len(filas), "capturado_en": ts.isoformat()}
+
+    def leer_volcado(self, tipo: str, texto=None, codigo_estado=None,
+                     limite: int = 50, offset: int = 0) -> dict:
+        """Pagina y filtra un volcado ya guardado. NO consume cuota: es local."""
+        con = self.cat
+        con.execute(self._DDL_VOLCADO)
+        where, params = ["tipo = ?"], [tipo]
+        if texto:
+            where.append("lower(nombre) LIKE ?")
+            params.append("%" + str(texto).lower() + "%")
+        if codigo_estado is not None:
+            where.append("codigo_estado = ?")
+            params.append(int(codigo_estado))
+        w = " AND ".join(where)
+        total = con.execute(
+            "SELECT count(*) FROM listado_vivo WHERE " + w, params).fetchone()[0]
+        cur = con.execute(
+            "SELECT codigo, nombre, codigo_estado, fecha_cierre FROM listado_vivo "
+            "WHERE " + w + " ORDER BY codigo LIMIT ? OFFSET ?",
+            params + [int(limite), int(offset)])
+        cols = [d[0] for d in cur.description]
+        filas = [dict(zip(cols, r)) for r in cur.fetchall()]
+        capt = con.execute(
+            "SELECT max(capturado_en), count(*) FROM listado_vivo WHERE tipo = ?",
+            [tipo]).fetchone()
+        return {"coinciden": total, "devueltas": len(filas), "filas": filas,
+                "volcado_capturado_en": str(capt[0]) if capt and capt[0] else None,
+                "filas_en_el_volcado": capt[1] if capt else 0}
+
+    def volcados(self) -> list:
+        """Que volcados hay, para no adivinar el `tipo`."""
+        con = self.cat
+        con.execute(self._DDL_VOLCADO)
+        cur = con.execute(
+            "SELECT tipo, filtros, max(capturado_en) AS capturado_en, "
+            "count(*) AS filas FROM listado_vivo GROUP BY 1, 2 ORDER BY 3 DESC")
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
     def close(self) -> None:
         self.con.close()
         if self._cat is not None:

@@ -481,7 +481,7 @@ _ESTADOS_OC = ("enviadaproveedor", "aceptada", "cancelada",
 
 
 def _listado_vivo(api, cuota, *, que: str, fecha, estado, codigo_organismo,
-                  codigo_proveedor, limite) -> dict:
+                  codigo_proveedor, limite, volcar=False, store=None) -> dict:
     """Cuerpo comun de las dos tools de listado en vivo.
 
     Exige al menos un filtro. Sin ninguno, la API responde sobre el dia corriente
@@ -524,6 +524,14 @@ def _listado_vivo(api, cuota, *, que: str, fecha, estado, codigo_organismo,
     devueltas = todas[:n]
     truncado = len(todas) > len(devueltas)
 
+    # Conteo por estado sobre TODAS las filas, no sobre las devueltas. Es la
+    # respuesta a "como se analiza algo truncado": lo que se recorta son las
+    # filas, no los agregados. Estos numeros son exactos aunque se vean 25.
+    por_estado = {}
+    for f in todas:
+        k = str(f.get("CodigoEstado"))
+        por_estado[k] = por_estado.get(k, 0) + 1
+
     meta = _meta_vivo(cuota)
     meta["limitaciones"] = list(meta["limitaciones"]) + [{
         "limitacion": (
@@ -539,7 +547,12 @@ def _listado_vivo(api, cuota, *, que: str, fecha, estado, codigo_organismo,
                 f"PRIMERAS en el orden que entrega ChileCompra, NO una muestra "
                 f"representativa: no calcules estadisticas sobre esto ni digas "
                 f"'las mas grandes'. Para el universo, acota el filtro o subi "
-                f"`limite` (tope {_LIMITE_MAX}). "
+                f"`limite` (tope {_LIMITE_MAX}) -- pero la salida BUENA es "
+                f"volcar=true, que guarda las {len(todas)} filas completas en el "
+                f"almacen y devuelve solo el conteo: no se pierde nada y no te "
+                f"llena el contexto. Y ojo: conteo_por_codigo_estado YA esta "
+                f"calculado sobre las {len(todas)}, no sobre las {len(devueltas)} "
+                f"que ves, asi que para contar por estado no te falta nada. "
                 f"IMPORTANTE al citarlo: el recorte lo hace ESTA tool para no "
                 f"llenarte el contexto, NO ChileCompra -- su API devuelve todo "
                 f"junto y sin paginar. No le atribuyas a ChileCompra un limite "
@@ -547,32 +560,82 @@ def _listado_vivo(api, cuota, *, que: str, fecha, estado, codigo_organismo,
             "severidad": "alta",
             "verificado_por": "determinado por el truncado de esta respuesta"})
 
-    return {
-        "filtros": {k: v for k, v in (("fecha", fecha), ("estado", estado),
-                                      ("codigo_organismo", codigo_organismo),
-                                      ("codigo_proveedor", codigo_proveedor)) if v},
+    filtros = {k: v for k, v in (("fecha", fecha), ("estado", estado),
+                                 ("codigo_organismo", codigo_organismo),
+                                 ("codigo_proveedor", codigo_proveedor)) if v}
+    out = {
+        "filtros": filtros,
         "cantidad_total": d.get("Cantidad"),
+        "conteo_por_codigo_estado": por_estado,
+        "conteo_calculado_sobre": len(todas),
         "devueltas": len(devueltas),
         "truncado": truncado,
         clave: devueltas,
         "meta": meta,
     }
 
+    if volcar:
+        if store is None:
+            out["volcado"] = {"error": "sin almacen: el volcado no esta disponible"}
+        else:
+            import json as _j
+            try:
+                v = store.volcar_listado(
+                    que,
+                    _j.dumps(filtros, sort_keys=True, ensure_ascii=False),
+                    todas)
+                v["como_consultarlo"] = (
+                    "mp_volcado_leer(tipo=" + chr(39) + que + chr(39) + ", texto=..., "
+                    "codigo_estado=..., limite=..., offset=...) -- local, 0 hits")
+                out["volcado"] = v
+            except Exception as exc:                              # noqa: BLE001
+                out["volcado"] = {"error": scrub("%s: %s" % (type(exc).__name__, exc))}
+    return out
+
 
 def mp_licitaciones_vivo(api, cuota, fecha=None, estado=None, codigo_organismo=None,
-                         codigo_proveedor=None, limite=None) -> dict:
+                         codigo_proveedor=None, limite=None, volcar=False,
+                         store=None) -> dict:
     """Listado de licitaciones EN VIVO. Los cuatro filtros son combinables."""
     return _listado_vivo(api, cuota, que="licitaciones", fecha=fecha, estado=estado,
                          codigo_organismo=codigo_organismo,
-                         codigo_proveedor=codigo_proveedor, limite=limite)
+                         codigo_proveedor=codigo_proveedor, limite=limite,
+                         volcar=volcar, store=store)
 
 
 def mp_ordenes_vivo(api, cuota, fecha=None, estado=None, codigo_organismo=None,
-                    codigo_proveedor=None, limite=None) -> dict:
+                    codigo_proveedor=None, limite=None, volcar=False,
+                    store=None) -> dict:
     """Listado de ordenes de compra EN VIVO. Los cuatro filtros son combinables."""
     return _listado_vivo(api, cuota, que="ordenes", fecha=fecha, estado=estado,
                          codigo_organismo=codigo_organismo,
-                         codigo_proveedor=codigo_proveedor, limite=limite)
+                         codigo_proveedor=codigo_proveedor, limite=limite,
+                         volcar=volcar, store=store)
+
+
+def mp_volcado_leer(store, tipo: str, texto=None, codigo_estado=None,
+                    limite=50, offset=0) -> dict:
+    """Lee un listado ya volcado. 0 hits: no sale a la red."""
+    if tipo not in ("licitaciones", "ordenes"):
+        return {"error": "tipo debe ser licitaciones u ordenes",
+                "volcados_disponibles": store.volcados()}
+    n = max(1, min(int(limite or 50), _LIMITE_MAX))
+    r = store.leer_volcado(tipo, texto=texto, codigo_estado=codigo_estado,
+                           limite=n, offset=max(0, int(offset or 0)))
+    r["meta"] = {
+        "procedencia": "volcado local de una consulta en vivo previa",
+        "as_of": r.get("volcado_capturado_en"),
+        "cuota": "no consume: esta llamada no sale a la red",
+        "limitaciones": [{
+            "limitacion": (
+                "Es una FOTO del momento en que se volco, no el estado de ahora. "
+                "Si paso tiempo, volve a llamar la tool en vivo con volcar=true. "
+                "Y trae solo los campos del listado de la API: ni monto, ni "
+                "comprador, ni proveedor."),
+            "severidad": "media",
+            "verificado_por": "MEDIDO 2026-08-12"}],
+    }
+    return r
 
 
 def mp_comprador_catalogo(api, cuota) -> dict:

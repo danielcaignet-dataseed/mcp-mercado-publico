@@ -308,7 +308,8 @@ def mp_oc_vivo(codigo: str) -> str:
 def mp_licitaciones_vivo(fecha: str | None = None, estado: str | None = None,
                          codigo_organismo: str | None = None,
                          codigo_proveedor: str | None = None,
-                         limite: int | None = None) -> str:
+                         limite: int | None = None,
+                         volcar: bool = False) -> str:
     """BUSCA licitaciones EN VIVO en todo Chile. Los filtros son combinables.
 
     Es la contraparte de mp_search: mp_search consulta el snapshot (rapido, con
@@ -321,6 +322,9 @@ def mp_licitaciones_vivo(fecha: str | None = None, estado: str | None = None,
     - `codigo_organismo`: codigo del comprador (mp_comprador_catalogo lo da).
     - `codigo_proveedor`: CODIGO de empresa, no RUT (mp_proveedor_resolver).
     - `limite`: cuantas devolver, por omision 25, tope 200.
+    - `volcar`: guarda el listado COMPLETO en el almacen y devuelve solo el
+      conteo. Es la via para trabajar un universo grande sin truncar nada:
+      despues se pagina y filtra con mp_volcado_leer, que no gasta cuota.
 
     Hace falta al menos un filtro. Cuesta 1 hit sea cual sea el tamano del
     resultado. El listado trae solo 4 campos por licitacion: para monto,
@@ -330,14 +334,15 @@ def mp_licitaciones_vivo(fecha: str | None = None, estado: str | None = None,
     encuentra que se adjudico un dia sin ingerir nada.
     """
     return _run(T.mp_licitaciones_vivo, _api(), _cuota, fecha, estado,
-                codigo_organismo, codigo_proveedor, limite)
+                codigo_organismo, codigo_proveedor, limite, volcar, _store)
 
 
 @mcp.tool(annotations=_RO)
 def mp_ordenes_vivo(fecha: str | None = None, estado: str | None = None,
                     codigo_organismo: str | None = None,
                     codigo_proveedor: str | None = None,
-                    limite: int | None = None) -> str:
+                    limite: int | None = None,
+                    volcar: bool = False) -> str:
     """BUSCA ordenes de compra EN VIVO. Los filtros son combinables.
 
     Responde "que le compro el Estado a esta empresa" y "que compro este
@@ -348,6 +353,8 @@ def mp_ordenes_vivo(fecha: str | None = None, estado: str | None = None,
       Los cinco verificados 2026-08-12.
     - `codigo_organismo` / `codigo_proveedor`: codigos, no nombres ni RUT.
     - `limite`: por omision 25, tope 200.
+    - `volcar`: guarda las ~12.000 OC del dia completas en el almacen y
+      devuelve solo el conteo. Despues, mp_volcado_leer sin gastar cuota.
 
     Hace falta al menos un filtro. 1 hit por llamada. El listado trae solo
     Codigo, Nombre y CodigoEstado -- para totales, items y proveedor hay que
@@ -357,7 +364,7 @@ def mp_ordenes_vivo(fecha: str | None = None, estado: str | None = None,
     mp_oc_vivo del codigo que interese.
     """
     return _run(T.mp_ordenes_vivo, _api(), _cuota, fecha, estado,
-                codigo_organismo, codigo_proveedor, limite)
+                codigo_organismo, codigo_proveedor, limite, volcar, _store)
 
 
 @mcp.tool(annotations=_RO)
@@ -387,6 +394,27 @@ def mp_comprador_catalogo() -> str:
     organismo de forma ambigua.
     """
     return _run(T.mp_comprador_catalogo, _api(), _cuota)
+
+
+@mcp.tool(annotations=_RW)
+def mp_volcado_leer(tipo: str, texto: str | None = None,
+                    codigo_estado: int | None = None,
+                    limite: int = 50, offset: int = 0) -> str:
+    """Lee un listado que ya fue volcado con volcar=true. NO consume cuota.
+
+    Es la forma de recorrer un universo grande sin truncarlo: se volca una vez
+    (1 hit) y despues se pagina y filtra cuantas veces haga falta, gratis.
+
+    - `tipo`: "licitaciones" u "ordenes".
+    - `texto`: subcadena en el nombre, sin distinguir mayusculas.
+    - `codigo_estado`: el numerico que trae el listado de la API.
+    - `limite` / `offset`: paginacion, tope 200 por pagina.
+
+    Es una FOTO del momento del volcado, no el estado de ahora, y trae solo los
+    campos del listado: ni monto, ni comprador, ni proveedor.
+    """
+    return _run(T.mp_volcado_leer, _store, tipo, texto, codigo_estado,
+                limite, offset)
 
 
 @mcp.tool(annotations=_RO)
