@@ -450,9 +450,92 @@ UNSPSC = Entity(
 )
 
 
+OFERTA = Entity(
+    name="oferta",
+    label="Oferta de un proveedor a una linea de licitacion",
+    table="oferta",
+    grano="Una fila = una oferta de un proveedor a una linea de una licitacion. "
+          "Incluye las que PERDIERON.",
+    procedencia="bulk-lic (datos abiertos de ChileCompra, sin ticket)",
+    dims=_idx([
+        _d("codigo_licitacion", "Licitacion", "codigo_licitacion", kind="code"),
+        _d("correlativo_item", "Linea", "correlativo_item", kind="code"),
+        _d("unspsc_commodity", "Commodity UNSPSC", "unspsc_commodity", kind="code",
+           vocabulario="unspsc_commodity"),
+        _d("nombre_linea", "Nombre de la linea", "nombre_linea"),
+        _d("rut_proveedor", "RUT del oferente", "rut_proveedor", kind="code",
+           vocabulario="proveedor"),
+        _d("nombre_proveedor", "Oferente", "nombre_proveedor"),
+        _d("seleccionada", "Gano esta linea", "seleccionada",
+           nota="true = su oferta fue la seleccionada para esa linea"),
+        _d("estado_oferta", "Estado de la oferta", "estado_oferta",
+           nota="Aceptada | Rechazada"),
+        _d("moneda", "Moneda", "moneda",
+           nota="normalizada a CLP/USD/CLF/UTM/EUR; NULL si la fuente decia "
+                "'Moneda revisar'"),
+        _d("n_oferentes", "Numero de oferentes del proceso", "n_oferentes"),
+        _d("criterios", "Criterios de evaluacion", "criterios"),
+        _d("organismo_codigo", "Organismo", "organismo_codigo", kind="code",
+           vocabulario="organismo"),
+        _d("organismo_nombre", "Nombre del organismo", "organismo_nombre"),
+        _d("fecha_adjudicacion", "Fecha de adjudicacion", "fecha_adjudicacion",
+           kind="date"),
+        _d("fecha_envio_oferta", "Fecha de envio de la oferta", "fecha_envio_oferta",
+           kind="date"),
+    ]),
+    measures=_idx([
+        _m("n_ofertas", "Cantidad de ofertas", "oferta_id", FNS_CONTEO, "conteo"),
+        _m("n_oferentes_distintos", "Oferentes distintos", "rut_proveedor",
+           ("count_distinct",), "conteo"),
+        _m("precio_unitario_clp", "Precio unitario ofertado en CLP",
+           "precio_unitario_clp", FNS_NUMERICAS, "monto"),
+        _m("total_ofertado", "Valor total ofertado", "total_ofertado", FNS_NUMERICAS,
+           "monto"),
+        _m("monto_adjudicado", "Monto adjudicado de la linea", "monto_adjudicado",
+           FNS_NUMERICAS, "monto"),
+        _m("cantidad_adjudicada", "Cantidad adjudicada", "cantidad_adjudicada",
+           FNS_NUMERICAS, "cantidad"),
+    ]),
+    caveats=(
+        Caveat("Es la unica entidad con las ofertas de los PERDEDORES. [MEDIDO "
+               "2026-08-19] sobre un mes: 119.281 ofertas, de las cuales 111.045 no "
+               "fueron seleccionadas, con precio unitario y RUT al 100%. Esto NO "
+               "viene de la API v1, que no expone ofertas: viene de los datos "
+               "abiertos, con un dia de desfase.",
+               sonda=None, severidad="baja"),
+        Caveat("NO calcules dispersion de precios agrupando por UNSPSC. [MEDIDO] un "
+               "mismo commodity mezcla hasta 19 unidades de medida distintas, con "
+               "ratios de x13.450.000 entre minimo y maximo: el 'precio unitario' de "
+               "un servicio global y el de un metro lineal no son comparables. La "
+               "comparacion valida es DENTRO de la misma linea de la misma "
+               "licitacion, donde unidad y objeto son identicos por construccion; "
+               "ahi el sobreprecio mediano del perdedor sobre el ganador fue 20,7%.",
+               sonda=None, severidad="alta"),
+        Caveat("`criterios` tiene cobertura real del 89%, no del 100%: [MEDIDO] 799 "
+               "de 7.273 licitaciones traen 'NA' literal en la fuente y quedan como "
+               "NULL. Y solo el 54,4% menciona 'Precio' entre sus criterios.",
+               sonda=None, severidad="media"),
+        Caveat("`precio_unitario` es NULL cuando la fuente traia menos de 2 pesos: "
+               "[MEDIDO] 4.973 de 119.281 ofertas venian con 0 o 1 peso. No se "
+               "corrigen ni se imputan, se descartan y quedan marcadas en "
+               "`precio_sospechoso`. Cualquier promedio excluye esas filas.",
+               sonda=None, severidad="media"),
+        Caveat("`precio_unitario_clp` usa la paridad del MES, no del dia, y la serie "
+               "de ChileCompra va un mes atras: [MEDIDO] para los meses posteriores "
+               "al ultimo publicado se arrastra la ultima paridad disponible. Para "
+               "montos grandes en meses volatiles eso introduce error.",
+               sonda=None, severidad="media"),
+        Caveat("`fecha_adjudicacion` puede ser una fecha ESTIMADA FUTURA: [MEDIDO] "
+               "hay filas con adjudicacion en meses que todavia no ocurrieron. Para "
+               "ordenar hechos usa `fecha_envio_oferta`, que si ocurrio.",
+               sonda=None, severidad="alta"),
+    ),
+)
+
+
 ENTIDADES: dict[str, Entity] = {
     e.name: e for e in [
-        LICITACION, LICITACION_ITEM, ADJUDICACION_ITEM,
+        LICITACION, LICITACION_ITEM, ADJUDICACION_ITEM, OFERTA,
         ORDEN_COMPRA, ORDEN_COMPRA_ITEM,
         ORGANISMO, PROVEEDOR, UNSPSC,
     ]
