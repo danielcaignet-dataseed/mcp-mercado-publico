@@ -217,3 +217,43 @@ CREATE TABLE IF NOT EXISTS probe_result (
     evidencia    VARCHAR,
     PRIMARY KEY (probe_id, ts)
 );
+
+-- Ofertas linea por linea, incluidas las que PERDIERON.
+--
+-- Es la tabla que da la capacidad que la API v1 no puede dar de ninguna forma, y
+-- la que refuta la sonda P-09 ("el diccionario NO incluye criterios de
+-- evaluacion, ponderaciones, ni las ofertas de los perdedores").
+--
+-- [MEDIDO 2026-08-19] sobre lic-da/2026-7: 119.281 filas, de las cuales 111.045
+-- son "No Seleccionada" -- el 93% son ofertas perdedoras con precio unitario y
+-- RUT del oferente, 100% de cobertura en ambos campos.
+CREATE TABLE IF NOT EXISTS oferta (
+    oferta_id           VARCHAR PRIMARY KEY,   -- licitacion|item|rut
+    codigo_licitacion   VARCHAR,
+    correlativo_item    VARCHAR,
+    unspsc_commodity    VARCHAR,
+    nombre_linea        VARCHAR,
+    rut_proveedor       VARCHAR,
+    nombre_proveedor    VARCHAR,
+    razon_social        VARCHAR,
+    estado_oferta       VARCHAR,               -- Aceptada | Rechazada
+    seleccionada        BOOLEAN,               -- gano esta linea
+    cantidad_ofertada   DOUBLE,
+    moneda              VARCHAR,
+    -- NULL si el precio de la fuente es < 2: hay ofertas cargadas con 0 y 1 peso
+    -- y promediarlas da dispersiones de 3,1e10. Se descarta, no se corrige.
+    precio_unitario     DOUBLE,
+    precio_unitario_clp DOUBLE,                -- via tipo_cambio, granularidad mensual
+    total_ofertado      DOUBLE,
+    cantidad_adjudicada DOUBLE,
+    monto_adjudicado    DOUBLE,
+    fecha_envio_oferta  TIMESTAMP,
+    n_oferentes         INTEGER,               -- competencia real del proceso
+    criterios           VARCHAR,               -- texto tal cual lo publica el organismo
+    organismo_codigo    VARCHAR,
+    organismo_nombre    VARCHAR,
+    fecha_adjudicacion  DATE,
+    precio_sospechoso   BOOLEAN,               -- true si la fuente traia < 2
+    _procedencia        VARCHAR,               -- bulk-lic:AAAA-M
+    _ingerido_en        TIMESTAMP
+);
