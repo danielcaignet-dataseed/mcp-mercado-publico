@@ -460,6 +460,22 @@ def cmd_set_ticket(a) -> None:
         print(f'  icacls "{f}" /inheritance:r /grant:r "%USERNAME%:R"')
 
 
+def cmd_sync(a) -> None:
+    """Ciclo completo: bulk historico + API para el dia en curso.
+
+    Es lo que corre el cron. Todo se construye en mp.duckdb.next y solo el ultimo
+    paso toca la base servida, con rename atomico. Si quedan tablas vacias NO
+    publica: preferimos servir el almacen anterior antes que uno incompleto.
+    """
+    import json as _json
+    from .sync import sincronizar
+    informe = sincronizar(meses_bulk=a.meses, meses_retencion=a.retencion,
+                          con_api=not a.sin_api, publicar=not a.no_publicar)
+    print(_json.dumps(informe, indent=2, ensure_ascii=False, default=str))
+    if informe.get("tablas_vacias"):
+        raise SystemExit("tablas vacias: %s" % informe["tablas_vacias"])
+
+
 def cmd_publicar(a) -> None:
     """Publica el snapshot construido, con rename atomico.
 
@@ -519,6 +535,18 @@ def main() -> None:
                    help="muestrea N licitaciones del listado (muestreo sistematico) "
                         "para no gastar un hit por cada una")
     p.set_defaults(fn=cmd_live_listado)
+
+    p = sub.add_parser("sync", help="bulk + api + retencion + publicar (el cron)")
+    p.add_argument("--meses", type=int, default=2,
+                   help="cuantos meses de bulk refrescar (default 2: el actual y "
+                        "el anterior, porque el mes en curso se rearma a diario)")
+    p.add_argument("--retencion", type=int, default=36,
+                   help="meses a conservar (default 36 = 7,87 GB medidos)")
+    p.add_argument("--sin-api", action="store_true",
+                   help="omite el refresco por API; no gasta cuota")
+    p.add_argument("--no-publicar", action="store_true",
+                   help="construye el .next y NO hace el rename")
+    p.set_defaults(fn=cmd_sync)
 
     p = sub.add_parser("publicar", help="rename atomico del snapshot construido")
     p.add_argument("--desde")
