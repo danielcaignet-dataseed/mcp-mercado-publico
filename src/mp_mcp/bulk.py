@@ -188,6 +188,17 @@ def _num(col: str) -> str:
     return _NUM.format(c=f'"{col}"')
 
 
+def _bool(col: str) -> str:
+    """Booleano de la fuente: "1" es true, "0" es false, cualquier otra cosa NULL.
+
+    No se asume que 0/1 sea exhaustivo: [MEDIDO 2026-08-19] la columna `Obras`
+    trae tambien "2", que no esta documentado. Un valor desconocido entra como
+    NULL en vez de colapsar a false, porque false es una afirmacion.
+    """
+    return (f'CASE trim("{col}") WHEN \'1\' THEN TRUE '
+            f'WHEN \'0\' THEN FALSE ELSE NULL END')
+
+
 # ------------------------------------------------------- ordenes de compra
 
 COLS_OC = ["Codigo", "Nombre", "codigoEstado", "Estado", "FechaEnvio",
@@ -302,8 +313,8 @@ def cargar_lic(con, csv_path: Path, periodo: str) -> dict:
     ts = datetime.now(timezone.utc)
     proc = f"bulk-lic:{periodo}"
 
-    con.execute("DELETE FROM oferta WHERE _procedencia = ?", [proc])
-    con.execute("DELETE FROM adjudicacion_item WHERE _procedencia = ?", [proc])
+    for _t in ("oferta", "adjudicacion_item", "licitacion", "licitacion_item"):
+        con.execute(f"DELETE FROM {_t} WHERE _procedencia = ?", [proc])
 
     con.execute(f"""
         INSERT OR REPLACE INTO oferta SELECT
@@ -367,6 +378,59 @@ def cargar_lic(con, csv_path: Path, periodo: str) -> dict:
         "SELECT count(*) FROM adjudicacion_item WHERE _procedencia = ?",
         [proc]).fetchone()[0]
 
+    # licitacion: una fila por proceso. El archivo viene a grano de oferta-linea,
+    # asi que se colapsa por CodigoExterno.
+    #
+    # `cantidad_reclamos` queda NULL a proposito: [MEDIDO 2026-08-19] la columna
+    # CantidadReclamos trae valores como 972, 507 y 11.788 repetidos cientos de
+    # veces -- son identificadores, no cantidades de reclamos. Cargar un numero
+    # que no es lo que dice su nombre es peor que no cargarlo.
+    con.execute(f"""
+        INSERT OR REPLACE INTO licitacion
+        SELECT "CodigoExterno", any_value("Nombre"), any_value("Descripcion"),
+               any_value("Estado"), any_value("Tipo"),
+               any_value({_sql_moneda('"Moneda Adquisicion"')}),
+               any_value({_bool("Obras")}), any_value({_bool("TomaRazon")}),
+               any_value({_bool("SubContratacion")}),
+               any_value({_bool("ExtensionPlazo")}),
+               any_value({_bool("VisibilidadMonto")}),
+               any_value(TRY_CAST("Estimacion" AS INTEGER)),
+               any_value({_num('MontoEstimado')}), NULL,
+               any_value(TRY_CAST("NumeroOferentes" AS INTEGER)),
+               NULL,
+               any_value("CodigoOrganismo"), any_value("NombreOrganismo"),
+               any_value("RegionUnidad"), any_value("ComunaUnidad"),
+               any_value(TRY_CAST("FechaPublicacion" AS DATE)),
+               any_value(TRY_CAST("FechaCierre" AS DATE)),
+               any_value(TRY_CAST("FechaAdjudicacion" AS DATE)),
+               any_value("Link"), NULL, ?, ?
+        FROM cruda WHERE "CodigoExterno" IS NOT NULL
+        GROUP BY "CodigoExterno"
+    """, [proc, ts])
+    n_lic = con.execute("SELECT count(*) FROM licitacion WHERE _procedencia = ?",
+                        [proc]).fetchone()[0]
+
+    con.execute("""
+        INSERT OR REPLACE INTO licitacion_item
+        SELECT "CodigoExterno" || '#' || coalesce("Codigoitem",''),
+               "CodigoExterno", TRY_CAST("Correlativo" AS INTEGER),
+               any_value("CodigoProductoONU"), NULL, NULL, NULL,
+               any_value("Rubro3"), any_value("Nombre producto genrico"),
+               any_value("Descripcion linea Adquisicion"),
+               any_value("UnidadMedida"),
+               any_value(TRY_CAST(replace(replace("Cantidad",'.',''),',','.') AS DOUBLE)),
+               any_value("Estado"), any_value("CodigoOrganismo"),
+               any_value("NombreOrganismo"), any_value("RegionUnidad"),
+               any_value("ComunaUnidad"),
+               any_value(TRY_CAST("FechaPublicacion" AS DATE)),
+               any_value(TRY_CAST("FechaCierre" AS DATE)), ?, ?
+        FROM cruda WHERE "CodigoExterno" IS NOT NULL
+        GROUP BY "CodigoExterno", "Codigoitem", TRY_CAST("Correlativo" AS INTEGER)
+    """, [proc, ts])
+    n_item = con.execute(
+        "SELECT count(*) FROM licitacion_item WHERE _procedencia = ?",
+        [proc]).fetchone()[0]
+
     con.execute("""
         INSERT OR REPLACE INTO proveedor
         SELECT nullif("RutProveedor",''), any_value("NombreProveedor"),
@@ -379,7 +443,8 @@ def cargar_lic(con, csv_path: Path, periodo: str) -> dict:
         "SELECT count(*) FROM oferta WHERE _procedencia = ? AND NOT seleccionada",
         [proc]).fetchone()[0]
     con.execute("DROP TABLE cruda")
-    return {"filas_csv": filas, "oferta": n_of, "ofertas_perdedoras": perdedoras,
+    return {"filas_csv": filas, "licitacion": n_lic, "licitacion_item": n_item,
+            "oferta": n_of, "ofertas_perdedoras": perdedoras,
             "adjudicacion_item": n_adj}
 
 
@@ -440,6 +505,7 @@ def convertir_a_clp(con) -> dict:
         ("adjudicacion_item", "precio_unitario", "precio_unitario_clp",
          "fecha_adjudicacion"),
         ("orden_compra_item", "precio_neto", "precio_neto_clp", "fecha_envio"),
+        ("licitacion", "monto_estimado", "monto_estimado_clp", "fecha_publicacion"),
     ):
         con.execute(f"""
             UPDATE {tabla} SET {col_clp} = {col_orig} * tc.a_clp
