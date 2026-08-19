@@ -479,9 +479,10 @@ OFERTA = Entity(
            vocabulario="organismo"),
         _d("organismo_nombre", "Nombre del organismo", "organismo_nombre"),
         _d("fecha_adjudicacion", "Fecha de adjudicacion", "fecha_adjudicacion",
-           kind="date"),
+           kind="temporal",
+           nota="PUEDE SER ESTIMADA FUTURA: para ordenar hechos usa fecha_envio_oferta"),
         _d("fecha_envio_oferta", "Fecha de envio de la oferta", "fecha_envio_oferta",
-           kind="date"),
+           kind="temporal", nota="la fecha del hecho: la oferta se envio"),
     ]),
     measures=_idx([
         _m("n_ofertas", "Cantidad de ofertas", "oferta_id", FNS_CONTEO, "conteo"),

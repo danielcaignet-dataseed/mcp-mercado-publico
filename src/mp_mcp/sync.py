@@ -82,11 +82,15 @@ def sincronizar_bulk(con, tmp: Path, meses: list[tuple[int, int]],
                 r["zip_bytes"] = n
                 res["meses"][per][contenedor] = r
                 log("  %s %s -> %s" % (contenedor, per, r))
-            except bulk.ErrorBulk as exc:
-                # Un mes que no existe todavia no es un fallo del proceso: el bulk
-                # tiene un dia de desfase y el mes en curso puede no estar.
+            except Exception as exc:                      # noqa: BLE001
+                # Se atrapa TODO a proposito, por mes y por fuente. Un mes que no
+                # existe todavia no es un fallo (el bulk tiene un dia de desfase),
+                # y un CSV malformado tampoco puede matar a los otros once: la
+                # primera corrida de 12 meses se cayo en el sexto archivo y perdio
+                # el trabajo de los cinco anteriores. El informe lista lo omitido y
+                # la compuerta de tablas vacias sigue protegiendo la publicacion.
                 res["errores"].append("%s %s: %s" % (contenedor, per, scrub(exc)))
-                log("  %s %s OMITIDO: %s" % (contenedor, per, scrub(exc))[:200])
+                log(("  %s %s OMITIDO: %s" % (contenedor, per, scrub(exc)))[:240])
             finally:
                 zp.unlink(missing_ok=True)
                 cp.unlink(missing_ok=True)

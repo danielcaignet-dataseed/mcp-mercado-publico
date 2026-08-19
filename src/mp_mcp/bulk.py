@@ -176,7 +176,7 @@ def _leer_csv(con, csv_path: Path, tabla: str = "cruda") -> int:
     con.execute(
         f"""CREATE TABLE {tabla} AS SELECT * FROM read_csv(?, delim=';',
             header=true, quote='"', all_varchar=true, ignore_errors=true,
-            sample_size=-1)""", [str(csv_path)])
+            strict_mode=false, sample_size=-1)""", [str(csv_path)])
     return con.execute(f"SELECT count(*) FROM {tabla}").fetchone()[0]
 
 
