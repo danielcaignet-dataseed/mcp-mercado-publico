@@ -257,3 +257,13 @@ CREATE TABLE IF NOT EXISTS oferta (
     _procedencia        VARCHAR,               -- bulk-lic:AAAA-M
     _ingerido_en        TIMESTAMP
 );
+
+-- OC que ChileCompra excluye de sus cifras oficiales, por error de monto o de
+-- tipo de moneda. Las publica en oc-da/hist_OC_erroneas.csv y
+-- oc-da/hist_moneda_H_vs_I.csv. Se cargan para poder EXCLUIRLAS del agregado sin
+-- borrarlas: la orden existio y el cliente puede preguntar por ella.
+CREATE TABLE IF NOT EXISTS oc_excluida (
+    codigo  VARCHAR PRIMARY KEY,
+    motivo  VARCHAR,          -- monto | moneda_encabezado_vs_item | ambos
+    _fuente VARCHAR
+);

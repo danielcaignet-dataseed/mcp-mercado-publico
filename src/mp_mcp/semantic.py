@@ -330,6 +330,8 @@ ORDEN_COMPRA = Entity(
     grano="Una fila = una orden de compra.",
     procedencia="oc-csv-procesado",
     dims=_idx([
+        _d("excluida_por_fuente", "Excluida de las cifras oficiales", "excluida_por_fuente",
+           nota="true = ChileCompra la excluye por error de monto o de moneda"),
         _d("codigo", "Codigo de la OC", "codigo", kind="code"),
         _d("codigo_licitacion", "Licitacion asociada", "codigo_licitacion", kind="code",
            nota="Vacio en compras sin licitacion (Convenio Marco, Compra Agil, trato directo)"),
@@ -346,7 +348,20 @@ ORDEN_COMPRA = Entity(
     measures=_idx([
         _m("n_ordenes", "Cantidad de ordenes", "codigo", FNS_CONTEO, "conteo"),
         _m("total_clp", "Total de la OC en CLP", "total_clp", FNS_NUMERICAS, "CLP",
-           caveats=(CAV_OC_PROCESADO, CAV_MONEDA)),
+           caveats=(Caveat(
+            "`total_clp` YA EXCLUYE las ordenes que ChileCompra saca de sus cifras "
+            "oficiales por error de monto o de tipo de moneda: en esas filas es NULL "
+            "y `excluida_por_fuente` es true. No es cosmetico. [MEDIDO 2026-08-19] "
+            "158 ordenes de 1,7 millones -- el 0,009% -- distorsionaban el ranking "
+            "de gasto entero: la I. Municipalidad de Rio Bueno aparecia tercera con "
+            "$1.053 mil millones por un arriendo de vehiculos cargado como 5.294.933 "
+            "UF (el monto en pesos dentro de una orden denominada en UF); su cifra "
+            "real es $11,4 mil millones. El Ministerio de Obras Publicas caia de "
+            "$2.134 a $464 mil millones. Si necesitas el universo crudo, filtra por "
+            "`excluida_por_fuente` y usa `total`, que conserva el monto original en "
+            "su moneda -- pero NO lo sumes entre monedas.",
+            sonda=None, severidad="alta"),
+        CAV_OC_PROCESADO, CAV_MONEDA)),
         _m("total_neto_clp", "Total neto en CLP", "total_neto_clp", FNS_NUMERICAS, "CLP",
            caveats=(CAV_OC_PROCESADO, CAV_MONEDA)),
         _m("promedio_calificacion", "Calificacion promedio del proveedor",
@@ -366,6 +381,8 @@ ORDEN_COMPRA_ITEM = Entity(
     grano="Una fila = una linea de una OC.",
     procedencia="oc-csv-procesado",
     dims=_idx([
+        _d("excluida_por_fuente", "Excluida de las cifras oficiales", "excluida_por_fuente",
+           nota="true = ChileCompra la excluye por error de monto o de moneda"),
         _d("codigo_oc", "Codigo de la OC", "codigo_oc", kind="code"),
         _d("moneda", "Moneda", "moneda"),
         _d("fecha_envio", "Fecha de envio", "fecha_envio", kind="temporal"),
@@ -376,7 +393,20 @@ ORDEN_COMPRA_ITEM = Entity(
     measures=_idx([
         _m("n_items", "Cantidad de lineas", "item_id", FNS_CONTEO, "conteo"),
         _m("precio_neto_clp", "Precio unitario neto en CLP", "precio_neto_clp",
-           FNS_NUMERICAS, "CLP", caveats=(CAV_OC_PROCESADO, CAV_MONEDA)),
+           FNS_NUMERICAS, "CLP", caveats=(Caveat(
+            "`total_clp` YA EXCLUYE las ordenes que ChileCompra saca de sus cifras "
+            "oficiales por error de monto o de tipo de moneda: en esas filas es NULL "
+            "y `excluida_por_fuente` es true. No es cosmetico. [MEDIDO 2026-08-19] "
+            "158 ordenes de 1,7 millones -- el 0,009% -- distorsionaban el ranking "
+            "de gasto entero: la I. Municipalidad de Rio Bueno aparecia tercera con "
+            "$1.053 mil millones por un arriendo de vehiculos cargado como 5.294.933 "
+            "UF (el monto en pesos dentro de una orden denominada en UF); su cifra "
+            "real es $11,4 mil millones. El Ministerio de Obras Publicas caia de "
+            "$2.134 a $464 mil millones. Si necesitas el universo crudo, filtra por "
+            "`excluida_por_fuente` y usa `total`, que conserva el monto original en "
+            "su moneda -- pero NO lo sumes entre monedas.",
+            sonda=None, severidad="alta"),
+        CAV_OC_PROCESADO, CAV_MONEDA)),
         _m("cantidad", "Cantidad", "cantidad", FNS_NUMERICAS, "unidad_medida"),
         _m("total_clp", "Total de la linea en CLP", "total_clp", FNS_NUMERICAS, "CLP",
            caveats=(CAV_OC_PROCESADO, CAV_MONEDA)),

@@ -68,6 +68,11 @@ def sincronizar_bulk(con, tmp: Path, meses: list[tuple[int, int]],
     par_csv.unlink()
     log("paridades: %s" % res["paridad"])
 
+    # Antes de cargar montos: sin las listas de exclusion, un error de tipeo de un
+    # municipio contamina cualquier ranking de gasto.
+    res["exclusiones"] = bulk.cargar_excluidas(con)
+    log("exclusiones de ChileCompra: %s" % res["exclusiones"])
+
     for a, m in meses:
         per = _periodo(a, m)
         res["meses"][per] = {}
@@ -239,8 +244,15 @@ def sincronizar(meses_bulk: int = 2, meses_retencion: int = MESES_RETENCION,
 
     # Se parte de una COPIA de la base servida, no de cero: si se construyera de
     # cero, cada corrida perderia los meses ya cargados y habria que rebajar todo.
-    if siguiente.exists():
-        siguiente.unlink()
+    # Hay que borrar el .wal tambien, no solo el .duckdb. [MEDIDO 2026-08-19] un
+    # WAL huerfano de una corrida anterior se intenta reproducir sobre la base
+    # recien copiada y DuckDB muere con InternalException: "Could not find node in
+    # column segment tree! Attempting to find row number 89250". Esto habria roto
+    # el cron en su primera corrida, con el almacen servido intacto pero sin
+    # actualizarse nunca mas.
+    for _f in (siguiente, Path(str(siguiente) + ".wal")):
+        if _f.exists():
+            _f.unlink()
     if destino.exists():
         shutil.copy2(destino, siguiente)
 
@@ -255,6 +267,8 @@ def sincronizar(meses_bulk: int = 2, meses_retencion: int = MESES_RETENCION,
         informe["bulk"] = sincronizar_bulk(
             con, tmp, _meses(date.today(), meses_bulk), log=log)
         informe["clp"] = bulk.convertir_a_clp(con)
+        informe["excluidas"] = bulk.marcar_excluidas(con)
+        log("OC excluidas por la fuente: %s" % informe["excluidas"])
         log("conversion a CLP: %s" % informe["clp"])
         if con_api:
             informe["api"] = refrescar_api(store, con, log=log)

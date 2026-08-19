@@ -62,6 +62,8 @@ BLOB = "https://transparenciachc.blob.core.windows.net"
 CONTENEDOR_OC = "oc-da"
 CONTENEDOR_LIC = "lic-da"
 URL_PARIDAD = f"{BLOB}/{CONTENEDOR_OC}/ParidadMoneda.csv"
+URL_OC_ERRONEAS = f"{BLOB}/{CONTENEDOR_OC}/hist_OC_erroneas.csv"
+URL_OC_MONEDA = f"{BLOB}/{CONTENEDOR_OC}/hist_moneda_H_vs_I.csv"
 
 # Un precio unitario de 0 o 1 peso no es un precio: es ruido de la fuente.
 # [MEDIDO 2026-08-19] sin este corte, la dispersion de una linea UNSPSC daba
@@ -156,6 +158,73 @@ def transcodificar(zip_path: Path, csv_path: Path) -> tuple[str, int]:
             if resto:
                 dst.write(resto.decode("cp1252", errors="replace").encode("utf-8"))
     return nombre, csv_path.stat().st_size
+
+
+def cargar_excluidas(con) -> dict:
+    """Las dos listas de exclusion que publica ChileCompra.
+
+    [MEDIDO 2026-08-19] 4.190 codigos por error de monto y 12.163 por moneda de
+    encabezado distinta de la del item, cubriendo 2006-2026. Sin esto, un solo
+    error de tipeo de un municipio -- 5,29 millones de UF por un arriendo de
+    vehiculos -- mete $212.200 millones falsos en cualquier ranking de gasto.
+    """
+    import csv as _csv
+    import io as _io
+    con.execute("""CREATE TABLE IF NOT EXISTS oc_excluida (
+        codigo VARCHAR PRIMARY KEY, motivo VARCHAR, _fuente VARCHAR)""")
+    con.execute("DELETE FROM oc_excluida")
+    vistos: dict[str, set] = {}
+    for url, motivo, col in ((URL_OC_ERRONEAS, "monto", 1),
+                             (URL_OC_MONEDA, "moneda_encabezado_vs_item", 1)):
+        raw = httpx.get(url, timeout=300.0, follow_redirects=True)
+        if raw.status_code != 200:
+            raise ErrorBulk(f"{url} devolvio HTTP {raw.status_code}: sin la lista de "
+                            f"exclusion los agregados de monto quedan contaminados, "
+                            f"asi que NO se sigue en silencio.")
+        texto = raw.content.decode("cp1252", errors="replace")
+        for fila in _csv.reader(_io.StringIO(texto), delimiter=";"):
+            if len(fila) <= col or not fila[col] or fila[col] in ("numoc", "porCode"):
+                continue
+            cod = fila[col].strip().strip('"')
+            if cod and cod != "NA":
+                vistos.setdefault(cod, set()).add(motivo)
+    filas = [(c, "ambos" if len(m) > 1 else next(iter(m)), "bulk-exclusiones")
+             for c, m in vistos.items()]
+    if not filas:
+        raise ErrorBulk("las listas de exclusion vinieron vacias: no se sigue")
+    con.executemany("INSERT OR REPLACE INTO oc_excluida VALUES (?, ?, ?)", filas)
+    por_motivo = dict(con.execute(
+        "SELECT motivo, count(*) FROM oc_excluida GROUP BY 1").fetchall())
+    return {"codigos": len(filas), "por_motivo": por_motivo}
+
+
+def marcar_excluidas(con) -> dict:
+    """Anula los montos en CLP de las OC excluidas. El original se conserva.
+
+    Es el DEFAULT y no una advertencia a proposito: el ranking de gasto salio mal
+    porque nada lo detuvo. Un caveat que el agente puede no leer no es un control.
+    """
+    for tabla in ("orden_compra", "orden_compra_item"):
+        con.execute(f"ALTER TABLE {tabla} ADD COLUMN IF NOT EXISTS "
+                    f"excluida_por_fuente BOOLEAN")
+    con.execute("""UPDATE orden_compra SET excluida_por_fuente = TRUE,
+                   total_clp = NULL, total_neto_clp = NULL, impuestos_clp = NULL
+                   WHERE codigo IN (SELECT codigo FROM oc_excluida)""")
+    con.execute("""UPDATE orden_compra_item SET excluida_por_fuente = TRUE,
+                   precio_neto_clp = NULL, total_clp = NULL
+                   WHERE codigo_oc IN (SELECT codigo FROM oc_excluida)""")
+    con.execute("""UPDATE orden_compra SET excluida_por_fuente = FALSE
+                   WHERE excluida_por_fuente IS NULL""")
+    con.execute("""UPDATE orden_compra_item SET excluida_por_fuente = FALSE
+                   WHERE excluida_por_fuente IS NULL""")
+    oc = con.execute("SELECT count(*) FROM orden_compra "
+                     "WHERE excluida_por_fuente").fetchone()[0]
+    it = con.execute("SELECT count(*) FROM orden_compra_item "
+                     "WHERE excluida_por_fuente").fetchone()[0]
+    monto = con.execute("SELECT round(sum(total)/1e9, 1) FROM orden_compra "
+                        "WHERE excluida_por_fuente").fetchone()[0]
+    return {"orden_compra_marcadas": oc, "items_marcados": it,
+            "monto_original_excluido_mil_mill": monto}
 
 
 # ------------------------------------------------------------ carga comun
