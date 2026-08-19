@@ -1,6 +1,6 @@
 # Consultas en vivo y el índice de esquema
 
-Estado: **desplegado y verificado en producción el 2026-08-12** (`mp-mcp:0.3.5`).
+Estado: **desplegado y verificado en producción el 2026-08-12** (`mp-mcp:0.3.8`).
 Todo lo marcado `[MEDIDO]` viene de un comando contra la API real con su salida.
 
 ---
@@ -143,8 +143,68 @@ Lo que sigue faltando **no es el truncado**: el listado de la API trae `Codigo`,
 `Nombre` y `CodigoEstado`, **cero campos de monto**. Con las 11.681 filas completas
 no se calcula un peso. Para plata hace falta el detalle, 1 hit por código.
 
+**El día en curso no está cerrado, y eso hay que decirlo.** `[MEDIDO 2026-08-19
+02:57 hora de Chile]` `ordenesdecompra?fecha=<hoy>` devolvió **62** contra las
+~11.700 de un día completo. No es un error del filtro: es que el día recién
+empieza. Cualquier total del día corriente es un parcial creciente. Lo detectó
+Demeter sola en la validación y lo declaró sin que se le pidiera.
+
 Sin ningún filtro las tools rechazan la llamada **sin gastar cuota**, porque sin
 filtro la API responde el día corriente entero.
+
+### El glosario de `CodigoEstado`, derivado por medición
+
+El listado trae el estado como **número y nada de texto**. Tres veces seguidas el
+agente resolvió eso poniendo el nombre de su propio conocimiento y presentándolo
+como verificado: *"ADJUDICADA (CódigoEstado 8)"*, y más tarde *"reparto por estado
+(códigos de la API v1, **verificados fila a fila**): Aceptada (6), En proceso (5),
+Enviada a Proveedor (4), Recepción Conforme (12)"*. Los **conteos** estaban
+verificados fila a fila; los **nombres** no venían del MCP.
+
+Dos de esos nombres eran correctos. Uno no era verificable: **ningún filtro
+documentado de ChileCompra devuelve el código 5 de órdenes de compra**, y aparece
+19 veces en un día cerrado.
+
+El glosario se deriva por medición, no de conocimiento previo. Método: por cada
+valor textual de `estado` que documenta ChileCompra se pide el listado y se mira
+qué códigos numéricos vuelven; si un filtro textual devuelve un único código, la
+correspondencia queda establecida. `[MEDIDO 2026-08-19]`:
+
+| Licitaciones | | Órdenes de compra | |
+|---|---|---|---|
+| `5` | publicada | `4` | enviadaproveedor |
+| `6` | **cerrada** | `6` | **aceptada** |
+| `7` | desierta | `9` | cancelada |
+| `8` | adjudicada | `12` | recepcionconforme |
+| `15` | revocada | | |
+| `16` | *sin nombre* (1 caso) | `5` | *sin nombre* (19 casos) |
+
+**Dos trampas medidas:**
+
+1. **El mismo número significa cosas distintas según la entidad.** El `6` es
+   *cerrada* en licitaciones y *aceptada* en órdenes de compra. Por eso el glosario
+   está separado por entidad y no hay una tabla única.
+2. **`activas` no es un estado, es un filtro.** Tanto `estado=activas` como
+   `estado=publicada` devuelven `CodigoEstado 5`.
+
+La respuesta trae ahora `conteo_por_estado` con los nombres medidos,
+`codigos_de_estado_sin_nombre` con los que no, y el glosario completo en
+`meta.glosario_codigo_estado`. Si aparece algún código sin nombre, se agrega una
+limitación de **severidad alta** que le pide explícitamente al agente citarlo como
+número y no ponerle una etiqueta de su propio conocimiento.
+
+`[MEDIDO en vivo 2026-08-19]` sobre el 28/07:
+
+```
+OC  por codigo : {'12': 7774, '6': 3478, '9': 223, '4': 187, '5': 19}
+OC  nombrado   : {'recepcionconforme': 7774, 'aceptada': 3478, 'cancelada': 223,
+                  'enviadaproveedor': 187}
+sin nombre     : ['5']
+LIC por codigo : {'8': 258, '7': 60, '6': 129, '5': 40, '15': 94, '16': 1}
+LIC nombrado   : {'adjudicada': 258, 'desierta': 60, 'cerrada': 129,
+                  'publicada': 40, 'revocada': 94}
+sin nombre     : ['16']
+```
 
 ### Dos bugs que sólo aparecieron al medir
 

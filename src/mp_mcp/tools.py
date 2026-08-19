@@ -479,6 +479,33 @@ _ESTADOS_LICITACION = ("activas", "publicada", "cerrada", "adjudicada",
 _ESTADOS_OC = ("enviadaproveedor", "aceptada", "cancelada",
                "recepcionconforme", "todos")
 
+# CodigoEstado -> nombre, DERIVADO POR MEDICION, no de conocimiento previo.
+# Metodo [MEDIDO 2026-08-19]: por cada valor textual de `estado` que documenta
+# ChileCompra se pidio el listado y se miro que codigos numericos volvian. Si un
+# filtro textual devuelve un unico codigo, la correspondencia queda establecida.
+#
+# Existe porque el listado trae el codigo numerico y NADA de texto, y tres veces
+# seguidas el agente resolvio eso poniendo el nombre de su propio conocimiento y
+# presentandolo como verificado. Dos de esas veces acerto; una invento el nombre
+# del codigo 5 de OC, que ningun filtro documentado devuelve.
+#
+# TRAMPA MEDIDA: el mismo numero significa cosas distintas segun la entidad.
+# El 6 es "cerrada" en licitaciones y "aceptada" en ordenes de compra. Por eso el
+# glosario esta separado por entidad y no hay una tabla unica.
+#
+# TRAMPA MEDIDA: `activas` NO es un estado, es un filtro. Tanto estado=activas
+# como estado=publicada devuelven CodigoEstado 5.
+_GLOSARIO_ESTADO = {
+    "licitaciones": {"5": "publicada", "6": "cerrada", "7": "desierta",
+                     "8": "adjudicada", "15": "revocada"},
+    "ordenes": {"4": "enviadaproveedor", "6": "aceptada", "9": "cancelada",
+                "12": "recepcionconforme"},
+}
+
+# Codigos vistos en un dia cerrado que NINGUN filtro documentado devuelve, asi que
+# no se les pone nombre: licitaciones 16 (1 caso) y ordenes 5 (19 casos).
+# `suspendida` y `cancelada` de licitaciones no devolvieron filas al medir.
+
 
 def _listado_vivo(api, cuota, *, que: str, fecha, estado, codigo_organismo,
                   codigo_proveedor, limite, volcar=False, store=None) -> dict:
@@ -531,6 +558,8 @@ def _listado_vivo(api, cuota, *, que: str, fecha, estado, codigo_organismo,
     for f in todas:
         k = str(f.get("CodigoEstado"))
         por_estado[k] = por_estado.get(k, 0) + 1
+    glos = _GLOSARIO_ESTADO[que]
+    sin_nombre = sorted(k for k in por_estado if k not in glos)
 
     meta = _meta_vivo(cuota)
     meta["limitaciones"] = list(meta["limitaciones"]) + [{
@@ -540,6 +569,22 @@ def _listado_vivo(api, cuota, *, que: str, fecha, estado, codigo_organismo,
             f"{detalle}, y cuesta 1 hit por codigo."),
         "severidad": "media",
         "verificado_por": "MEDIDO 2026-08-12"}]
+    if sin_nombre:
+        meta["limitaciones"].append({
+            "limitacion": (
+                "Los codigos de estado %s aparecen en el resultado y NO tienen "
+                "nombre verificado: ningun filtro documentado de ChileCompra los "
+                "devuelve, asi que el MCP no sabe como se llaman. NO les pongas "
+                "un nombre de tu propio conocimiento y lo presentes como dato: "
+                "citalos como codigo numerico. El glosario de los que SI estan "
+                "medidos viene en `glosario_codigo_estado`. Y ojo, el mismo "
+                "numero significa distinto segun la entidad: el 6 es cerrada en "
+                "licitaciones y aceptada en ordenes de compra."
+                % ", ".join(sin_nombre)),
+            "severidad": "alta",
+            "verificado_por": "MEDIDO 2026-08-19"})
+    meta["glosario_codigo_estado"] = glos
+
     if truncado:
         meta["limitaciones"].append({
             "limitacion": (
@@ -567,6 +612,9 @@ def _listado_vivo(api, cuota, *, que: str, fecha, estado, codigo_organismo,
         "filtros": filtros,
         "cantidad_total": d.get("Cantidad"),
         "conteo_por_codigo_estado": por_estado,
+        "conteo_por_estado": {glos[k]: v for k, v in por_estado.items()
+                              if k in glos},
+        "codigos_de_estado_sin_nombre": sin_nombre,
         "conteo_calculado_sobre": len(todas),
         "devueltas": len(devueltas),
         "truncado": truncado,
@@ -636,6 +684,7 @@ def mp_volcado_leer(store, tipo: str, filtros=None, texto=None, codigo_estado=No
             "severidad": "media",
             "verificado_por": "MEDIDO 2026-08-12"}],
     }
+    r["meta"]["glosario_codigo_estado"] = _GLOSARIO_ESTADO[tipo]
     otros = r.get("otros_volcados") or []
     if otros:
         r["meta"]["limitaciones"].append({

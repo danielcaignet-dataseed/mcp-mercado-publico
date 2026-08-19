@@ -195,6 +195,41 @@ if "volcar=true" not in alta or "ESTA tool" not in alta:
     fallos.append("el aviso de truncado no ofrece volcar=true o no aclara de quien "
                   "es el recorte")
 
+# -- 10. El glosario de estados: nombrar lo medido, no lo supuesto ---------
+# Demeter reporto "En proceso (5)" para una OC. El 5 aparece 19 veces en un dia
+# cerrado y NINGUN filtro documentado de ChileCompra lo devuelve, asi que ese
+# nombre salio de su propio conocimiento y se presento como verificado. Los
+# codigos sin correspondencia medida se citan como numero, no como nombre.
+MEZCLA = [{"Codigo": "x-%d" % i, "Nombre": "n%d" % i,
+           "CodigoEstado": c} for i, c in enumerate([6] * 4 + [12] * 3 + [5] * 2)]
+api_g = ApiEspia(cfg, cuota, {"Cantidad": 9, "Listado": MEZCLA})
+r = T.mp_ordenes_vivo(api_g, cuota, fecha="28072026", store=store)
+print("\n10. conteo_por_codigo_estado: %s" % r["conteo_por_codigo_estado"])
+print("    conteo_por_estado (nombrado): %s" % r["conteo_por_estado"])
+print("    codigos sin nombre: %s" % r["codigos_de_estado_sin_nombre"])
+if r["conteo_por_estado"] != {"aceptada": 4, "recepcionconforme": 3}:
+    fallos.append("no nombro los codigos medidos: %s" % r["conteo_por_estado"])
+if r["codigos_de_estado_sin_nombre"] != ["5"]:
+    fallos.append("no declaro el codigo sin nombre: %s"
+                  % r["codigos_de_estado_sin_nombre"])
+alta = " ".join(x["limitacion"] for x in r["meta"]["limitaciones"]
+                if x["severidad"] == "alta")
+if "NO les pongas" not in alta:
+    fallos.append("no le pide al agente que no invente el nombre del estado")
+if r["meta"].get("glosario_codigo_estado", {}).get("6") != "aceptada":
+    fallos.append("el glosario de ordenes no viaja en la respuesta")
+
+# La colision entre entidades: el 6 no significa lo mismo.
+r_lic = T.mp_licitaciones_vivo(api_g, cuota, fecha="28072026", store=store)
+print("    el 6 en licitaciones: %s | en ordenes: %s"
+      % (r_lic["meta"]["glosario_codigo_estado"]["6"],
+         r["meta"]["glosario_codigo_estado"]["6"]))
+if r_lic["meta"]["glosario_codigo_estado"]["6"] != "cerrada":
+    fallos.append("el glosario de licitaciones no distingue el 6")
+if r_lic["conteo_por_estado"] != {"cerrada": 4, "publicada": 2}:
+    fallos.append("el nombrado de licitaciones esta mal: %s"
+                  % r_lic["conteo_por_estado"])
+
 store.close()
 
 if fallos:
