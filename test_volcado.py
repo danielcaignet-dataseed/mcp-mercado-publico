@@ -132,15 +132,44 @@ print("\n5. tras re-volcar lo mismo: filas_en_el_volcado=%s" % r["filas_en_el_vo
 if r["filas_en_el_volcado"] != 500:
     fallos.append("re-volcar duplico filas: %s" % r["filas_en_el_volcado"])
 
-# -- 6. Otra consulta convive ----------------------------------------------
-T.mp_ordenes_vivo(api, cuota, estado="aceptada", volcar=True, store=store)
-r = T.mp_volcado_leer(store, "ordenes")
+# -- 6. Dos volcados conviven SIN mezclarse --------------------------------
+# Asi aparecio el bug: Demeter volco {"estado":"todos","fecha":"19082026"} (62
+# filas) mientras yo tenia volcado {"fecha":"28072026"} (11.681), y una lectura
+# por `tipo` devolvia 11.743 con los conteos por estado ya sin calzar contra la
+# API. El agente habria informado un total que mezcla dos preguntas distintas.
+CHICO = [{"Codigo": "9-%03d-SE26" % i, "Nombre": "Otra cosa %d" % i,
+          "CodigoEstado": 4} for i in range(7)]
+api_chico = ApiEspia(cfg, cuota, {"Cantidad": 7, "Listado": CHICO})
+T.mp_ordenes_vivo(api_chico, cuota, estado="aceptada", volcar=True, store=store)
+
 vol = store.volcados()
-print("\n6. dos consultas volcadas: %s | filas totales del tipo=%s"
-      % ([x["filtros"] for x in vol], r["filas_en_el_volcado"]))
-if len(vol) != 2 or r["filas_en_el_volcado"] != 1000:
-    fallos.append("las dos consultas no conviven: %s volcados, %s filas"
-                  % (len(vol), r["filas_en_el_volcado"]))
+r = T.mp_volcado_leer(store, "ordenes")           # sin filtros: el mas reciente
+print("\n6. dos volcados: %s" % [(x["filtros"], x["filas"]) for x in vol])
+print("   sin filtros lee el mas reciente: %s -> coinciden=%s"
+      % ((r.get("leyendo_volcado") or {}).get("filtros"), r["coinciden"]))
+if len(vol) != 2:
+    fallos.append("no conviven los dos volcados: %s" % len(vol))
+if r["coinciden"] != 7:
+    fallos.append("sin filtros no leyo el volcado mas reciente: coinciden=%s"
+                  % r["coinciden"])
+if not r.get("otros_volcados"):
+    fallos.append("no avisa que hay otro volcado del mismo tipo")
+sev = [x["severidad"] for x in r["meta"]["limitaciones"]]
+if "alta" not in sev:
+    fallos.append("con varios volcados no declara limitacion de severidad alta")
+
+# Y el volcado grande sigue intacto y separado.
+r = T.mp_volcado_leer(store, "ordenes", filtros=chr(123) + chr(34) + "fecha"
+                      + chr(34) + ": " + chr(34) + "28072026" + chr(34) + chr(125))
+print("   pidiendo el otro explicitamente -> coinciden=%s" % r["coinciden"])
+if r["coinciden"] != 500:
+    fallos.append("no se puede pedir un volcado especifico: coinciden=%s"
+                  % r["coinciden"])
+r = T.mp_volcado_leer(store, "licitaciones")
+print("   tipo sin ningun volcado -> coinciden=%s nota=%s"
+      % (r["coinciden"], bool(r.get("nota"))))
+if r["coinciden"] != 0 or not r.get("nota"):
+    fallos.append("un tipo sin volcado deberia dar 0 y explicar como volcarlo")
 
 # -- 7. Tipo invalido no revienta y orienta --------------------------------
 r = T.mp_volcado_leer(store, "cualquier-cosa")

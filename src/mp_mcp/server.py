@@ -397,7 +397,8 @@ def mp_comprador_catalogo() -> str:
 
 
 @mcp.tool(annotations=_RW)
-def mp_volcado_leer(tipo: str, texto: str | None = None,
+def mp_volcado_leer(tipo: str, filtros: str | None = None,
+                    texto: str | None = None,
                     codigo_estado: int | None = None,
                     limite: int = 50, offset: int = 0) -> str:
     """Lee un listado que ya fue volcado con volcar=true. NO consume cuota.
@@ -406,6 +407,9 @@ def mp_volcado_leer(tipo: str, texto: str | None = None,
     (1 hit) y despues se pagina y filtra cuantas veces haga falta, gratis.
 
     - `tipo`: "licitaciones" u "ordenes".
+    - `filtros`: cual de los volcados de ese tipo leer, tal cual aparece en
+      `otros_volcados`. Si lo omitis se lee el MAS RECIENTE. Importa cuando
+      hay varios: los numeros son de UN volcado, no de la suma.
     - `texto`: subcadena en el nombre, sin distinguir mayusculas.
     - `codigo_estado`: el numerico que trae el listado de la API.
     - `limite` / `offset`: paginacion, tope 200 por pagina.
@@ -413,8 +417,8 @@ def mp_volcado_leer(tipo: str, texto: str | None = None,
     Es una FOTO del momento del volcado, no el estado de ahora, y trae solo los
     campos del listado: ni monto, ni comprador, ni proveedor.
     """
-    return _run(T.mp_volcado_leer, _store, tipo, texto, codigo_estado,
-                limite, offset)
+    return _run(T.mp_volcado_leer, _store, tipo, filtros, texto,
+                codigo_estado, limite, offset)
 
 
 @mcp.tool(annotations=_RO)

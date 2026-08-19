@@ -613,14 +613,15 @@ def mp_ordenes_vivo(api, cuota, fecha=None, estado=None, codigo_organismo=None,
                          volcar=volcar, store=store)
 
 
-def mp_volcado_leer(store, tipo: str, texto=None, codigo_estado=None,
+def mp_volcado_leer(store, tipo: str, filtros=None, texto=None, codigo_estado=None,
                     limite=50, offset=0) -> dict:
-    """Lee un listado ya volcado. 0 hits: no sale a la red."""
+    """Lee UN listado ya volcado. 0 hits: no sale a la red."""
     if tipo not in ("licitaciones", "ordenes"):
         return {"error": "tipo debe ser licitaciones u ordenes",
                 "volcados_disponibles": store.volcados()}
     n = max(1, min(int(limite or 50), _LIMITE_MAX))
-    r = store.leer_volcado(tipo, texto=texto, codigo_estado=codigo_estado,
+    r = store.leer_volcado(tipo, filtros=filtros, texto=texto,
+                           codigo_estado=codigo_estado,
                            limite=n, offset=max(0, int(offset or 0)))
     r["meta"] = {
         "procedencia": "volcado local de una consulta en vivo previa",
@@ -635,6 +636,16 @@ def mp_volcado_leer(store, tipo: str, texto=None, codigo_estado=None,
             "severidad": "media",
             "verificado_por": "MEDIDO 2026-08-12"}],
     }
+    otros = r.get("otros_volcados") or []
+    if otros:
+        r["meta"]["limitaciones"].append({
+            "limitacion": (
+                "Hay %d volcado(s) MAS de tipo '%s' con otros filtros. Estos "
+                "numeros son SOLO del volcado que dice `leyendo_volcado`, no de "
+                "todos juntos. Si querias otro, pasalo en `filtros` tal cual "
+                "aparece en `otros_volcados`." % (len(otros), tipo)),
+            "severidad": "alta",
+            "verificado_por": "MEDIDO 2026-08-19"})
     return r
 
 

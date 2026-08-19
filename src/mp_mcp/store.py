@@ -209,23 +209,58 @@ class Store:
         con.execute("DELETE FROM listado_vivo WHERE tipo = ? AND filtros = ?",
                     [tipo, filtros])
         ts = datetime.now(timezone.utc)
-        for f in filas:
-            con.execute(
-                "INSERT INTO listado_vivo VALUES (?, ?, ?, ?, ?, ?, ?)",
-                [ts, tipo, filtros,
-                 f.get("CodigoExterno") or f.get("Codigo"),
-                 f.get("Nombre"),
-                 f.get("CodigoEstado"),
-                 str(f.get("FechaCierre")) if f.get("FechaCierre") else None])
+        # executemany, no un execute por fila. [MEDIDO 2026-08-19] con 11.681 filas
+        # el bucle de a una dejo un WAL de 3,8 MB para una tabla de ~500 KB.
+        con.executemany(
+            "INSERT INTO listado_vivo VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(ts, tipo, filtros,
+              f.get("CodigoExterno") or f.get("Codigo"),
+              f.get("Nombre"),
+              f.get("CodigoEstado"),
+              str(f.get("FechaCierre")) if f.get("FechaCierre") else None)
+             for f in filas])
+        # CHECKPOINT explicito: el servidor MCP tiene la conexion abierta de forma
+        # indefinida, asi que DuckDB nunca cierra por su cuenta y el WAL crece en
+        # cada volcado sin volver a bajar. El dato ya estaba durable en el WAL; lo
+        # que esto evita es que el archivo lateral quede mas grande que la base.
+        try:
+            con.execute("CHECKPOINT")
+        except Exception:                                     # noqa: BLE001
+            pass                                              # el dato ya esta en el WAL
         return {"tabla": "listado_vivo", "tipo": tipo, "filtros": filtros,
                 "filas": len(filas), "capturado_en": ts.isoformat()}
 
-    def leer_volcado(self, tipo: str, texto=None, codigo_estado=None,
+    def leer_volcado(self, tipo: str, filtros=None, texto=None, codigo_estado=None,
                      limite: int = 50, offset: int = 0) -> dict:
-        """Pagina y filtra un volcado ya guardado. NO consume cuota: es local."""
+        """Pagina y filtra UN volcado. NO consume cuota: es local.
+
+        Acotar a un solo `filtros` no es un detalle de comodidad. [MEDIDO
+        2026-08-19] con dos volcados de `ordenes` conviviendo -- uno de
+        {"fecha":"28072026"} con 11.681 filas y otro de
+        {"estado":"todos","fecha":"19082026"} con 62 -- una lectura por `tipo`
+        devolvia 11.743 y los conteos por estado dejaban de calzar con los de la
+        API (7.775 contra 7.774). El agente habria informado un total que mezcla
+        dos preguntas distintas sin saberlo.
+
+        Sin `filtros`, se lee el volcado MAS RECIENTE de ese tipo, y la respuesta
+        dice cual leyo y que otros habia.
+        """
         con = self.cat
         con.execute(self._DDL_VOLCADO)
-        where, params = ["tipo = ?"], [tipo]
+
+        if filtros is None:
+            r = con.execute(
+                "SELECT filtros FROM listado_vivo WHERE tipo = ? "
+                "ORDER BY capturado_en DESC LIMIT 1", [tipo]).fetchone()
+            if r is None:
+                return {"coinciden": 0, "devueltas": 0, "filas": [],
+                        "leyendo_volcado": None, "filas_en_el_volcado": 0,
+                        "otros_volcados": [],
+                        "nota": ("No hay ningun volcado de tipo '%s'. Primero llama "
+                                 "la tool en vivo con volcar=true." % tipo)}
+            filtros = r[0]
+
+        where, params = ["tipo = ?", "filtros = ?"], [tipo, filtros]
         if texto:
             where.append("lower(nombre) LIKE ?")
             params.append("%" + str(texto).lower() + "%")
@@ -242,11 +277,17 @@ class Store:
         cols = [d[0] for d in cur.description]
         filas = [dict(zip(cols, r)) for r in cur.fetchall()]
         capt = con.execute(
-            "SELECT max(capturado_en), count(*) FROM listado_vivo WHERE tipo = ?",
-            [tipo]).fetchone()
+            "SELECT max(capturado_en), count(*) FROM listado_vivo "
+            "WHERE tipo = ? AND filtros = ?", [tipo, filtros]).fetchone()
+        otros = [x for x in self.volcados()
+                 if x["tipo"] == tipo and x["filtros"] != filtros]
         return {"coinciden": total, "devueltas": len(filas), "filas": filas,
+                "leyendo_volcado": {"tipo": tipo, "filtros": filtros,
+                                    "capturado_en": str(capt[0]) if capt and capt[0]
+                                    else None},
                 "volcado_capturado_en": str(capt[0]) if capt and capt[0] else None,
-                "filas_en_el_volcado": capt[1] if capt else 0}
+                "filas_en_el_volcado": capt[1] if capt else 0,
+                "otros_volcados": otros}
 
     def volcados(self) -> list:
         """Que volcados hay, para no adivinar el `tipo`."""
