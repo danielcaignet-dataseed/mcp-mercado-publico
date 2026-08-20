@@ -132,17 +132,28 @@ CAV_MONEDA = Caveat(
     sonda="P-11", severidad="alta",
 )
 CAV_OC_PROCESADO = Caveat(
-    "Fuente: CSV mensual de ChileCompra, que segun su propia documentacion "
-    "esta procesado: convertido a pesos y CON TRANSACCIONES ATIPICAS REMOVIDAS. "
-    "Se hereda una definicion de outlier ajena. No usar para benchmark de "
-    "precios: para eso usar la entidad adjudicacion_item, derivada de OCDS.",
+    "Las transacciones atipicas NO vienen removidas: es lo contrario de lo que "
+    "decia esta salvedad. [MEDIDO 2026-08-19] la descarga masiva trae TODAS las "
+    "ordenes, incluidas las que ChileCompra excluye de sus cifras oficiales por "
+    "error de monto o de tipo de moneda -- y sin filtrarlas, la I. Municipalidad "
+    "de Rio Bueno aparecia tercera en el gasto nacional por una orden de arriendo "
+    "de vehiculos cargada como 5.294.933 UF. Este almacen carga las dos listas de "
+    "exclusion que ChileCompra publica (14.443 codigos) y deja `total_clp` en NULL "
+    "en esas filas, marcadas con `excluida_por_fuente`. Asi que sumar total_clp ya "
+    "es correcto; lo que NO se puede es sumar `total`, que conserva el monto "
+    "original en su moneda. La version anterior de esta salvedad tambien mandaba a "
+    "usar adjudicacion_item 'derivada de OCDS': hoy viene del bulk lic-da.",
     sonda="P-10", severidad="alta",
 )
 CAV_OC_LATENCIA = Caveat(
-    "El CSV de ordenes de compra se publica a mas tardar el dia 20 del mes "
-    "siguiente: rezago de hasta ~50 dias. No sirve para preguntas sobre la "
-    "semana en curso.",
-    sonda="P-14", severidad="media",
+    "Rezago de UN DIA, no de 50. [MEDIDO 2026-08-19] la descarga masiva se "
+    "regenera todos los dias entre las 12:00 y las 14:00 y el dato mas reciente "
+    "del almacen es de ayer. Corrige la version anterior de esta salvedad, que "
+    "hablaba de 'hasta ~50 dias' porque se escribio cuando la unica via conocida "
+    "era el reporte MENSUAL (publicado el dia 20 del mes siguiente). Ese reporte "
+    "existe y sigue teniendo ese rezago, pero no es lo que carga este almacen. "
+    "Para el dia EN CURSO igual hace falta la API: mp_ordenes_vivo.",
+    sonda="P-14", severidad="baja",
 )
 CAV_MONTO_ESTIMADO = Caveat(
     "MontoEstimado solo es publico si VisibilidadMonto=1, y Estimacion=3 "
@@ -534,7 +545,7 @@ OFERTA = Entity(
                "viene de la API v1, que no expone ofertas: viene de los datos "
                "abiertos, con un dia de desfase.",
                sonda=None, severidad="baja"),
-        Caveat("NO calcules dispersion de precios agrupando por UNSPSC. [MEDIDO] un "
+        Caveat("NO calcules dispersion de precios agrupando por UNSPSC. [MEDIDO 2026-08-19] un "
                "mismo commodity mezcla hasta 19 unidades de medida distintas, con "
                "ratios de x13.450.000 entre minimo y maximo: el 'precio unitario' de "
                "un servicio global y el de un metro lineal no son comparables. La "
@@ -542,21 +553,21 @@ OFERTA = Entity(
                "licitacion, donde unidad y objeto son identicos por construccion; "
                "ahi el sobreprecio mediano del perdedor sobre el ganador fue 20,7%.",
                sonda=None, severidad="alta"),
-        Caveat("`criterios` tiene cobertura real del 89%, no del 100%: [MEDIDO] 799 "
+        Caveat("`criterios` tiene cobertura real del 89%, no del 100%: [MEDIDO 2026-08-19] 799 "
                "de 7.273 licitaciones traen 'NA' literal en la fuente y quedan como "
                "NULL. Y solo el 54,4% menciona 'Precio' entre sus criterios.",
                sonda=None, severidad="media"),
         Caveat("`precio_unitario` es NULL cuando la fuente traia menos de 2 pesos: "
-               "[MEDIDO] 4.973 de 119.281 ofertas venian con 0 o 1 peso. No se "
+               "[MEDIDO 2026-08-19] 4.973 de 119.281 ofertas venian con 0 o 1 peso. No se "
                "corrigen ni se imputan, se descartan y quedan marcadas en "
                "`precio_sospechoso`. Cualquier promedio excluye esas filas.",
                sonda=None, severidad="media"),
         Caveat("`precio_unitario_clp` usa la paridad del MES, no del dia, y la serie "
-               "de ChileCompra va un mes atras: [MEDIDO] para los meses posteriores "
+               "de ChileCompra va un mes atras: [MEDIDO 2026-08-19] para los meses posteriores "
                "al ultimo publicado se arrastra la ultima paridad disponible. Para "
                "montos grandes en meses volatiles eso introduce error.",
                sonda=None, severidad="media"),
-        Caveat("`fecha_adjudicacion` puede ser una fecha ESTIMADA FUTURA: [MEDIDO] "
+        Caveat("`fecha_adjudicacion` puede ser una fecha ESTIMADA FUTURA: [MEDIDO 2026-08-19] "
                "hay filas con adjudicacion en meses que todavia no ocurrieron. Para "
                "ordenar hechos usa `fecha_envio_oferta`, que si ocurrio.",
                sonda=None, severidad="alta"),
