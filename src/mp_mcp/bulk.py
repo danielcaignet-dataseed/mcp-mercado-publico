@@ -309,7 +309,7 @@ def cargar_oc(con, csv_path: Path, periodo: str) -> dict:
                any_value("RegionUnidadCompra"), any_value("CiudadUnidadCompra"),
                any_value(TRY_CAST("FechaEnvio" AS DATE)),
                any_value(TRY_CAST("FechaAceptacion" AS DATE)),
-               ?, ?
+               FALSE, ?, ?
         FROM cruda WHERE "Codigo" IS NOT NULL GROUP BY "Codigo"
     """, [f"bulk-oc:{periodo}", ts])
     n_oc = con.execute("SELECT count(*) FROM orden_compra WHERE _procedencia = ?",
@@ -330,7 +330,7 @@ def cargar_oc(con, csv_path: Path, periodo: str) -> dict:
                nullif("RutSucursal", ''), "NombreProveedor",
                "CodigoOrganismoPublico", "OrganismoPublico",
                "RegionUnidadCompra", "CiudadUnidadCompra",
-               TRY_CAST("FechaEnvio" AS DATE), ?, ?
+               TRY_CAST("FechaEnvio" AS DATE), FALSE, ?, ?
         FROM cruda WHERE "IDItem" IS NOT NULL
     """, [f"bulk-oc:{periodo}", ts])
     n_item = con.execute(

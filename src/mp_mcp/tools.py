@@ -20,6 +20,10 @@ from .query import (
     Consulta, ConsultaInvalida, chart_hint, limitaciones_aplicables,
     sql_cobertura, to_sql, validar, MAX_LIMIT,
 )
+from .analisis import (                                # noqa: F401
+    mp_comprador_perfil, mp_huella, mp_precio_perdido,
+    mp_sin_competencia,
+)
 from .quota import Cuota
 from .semantic import ENTIDADES, VOCABULARIOS, describe
 from .store import Store

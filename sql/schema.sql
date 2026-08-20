@@ -110,6 +110,10 @@ CREATE TABLE IF NOT EXISTS orden_compra (
     comuna_comprador      VARCHAR,
     fecha_envio           DATE,
     fecha_aceptacion      DATE,
+    -- true = ChileCompra la excluye de sus cifras oficiales por error de
+    -- monto o de tipo de moneda. Va en el schema y no en un ALTER, para
+    -- que un almacen recien creado no rompa las consultas que la usan.
+    excluida_por_fuente   BOOLEAN DEFAULT FALSE,
     _procedencia          VARCHAR,      -- oc-csv-procesado | api-live
     _ingerido_en          TIMESTAMP
 );
@@ -136,6 +140,7 @@ CREATE TABLE IF NOT EXISTS orden_compra_item (
     region_comprador         VARCHAR,
     comuna_comprador         VARCHAR,
     fecha_envio              DATE,
+    excluida_por_fuente      BOOLEAN DEFAULT FALSE,
     _procedencia             VARCHAR,
     _ingerido_en             TIMESTAMP
 );

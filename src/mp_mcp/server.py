@@ -422,6 +422,72 @@ def mp_volcado_leer(tipo: str, filtros: str | None = None,
 
 
 @mcp.tool(annotations=_RO)
+def mp_precio_perdido(proveedor: str, desde: str | None = None,
+                      hasta: str | None = None, limite: int = 25) -> str:
+    """A que precio gano el competidor en las lineas que este proveedor PERDIO.
+
+    Es la pregunta comercial que no se puede responder navegando mercadopublico.cl,
+    porque no hay pantalla que agregue oferta perdedora contra oferta ganadora.
+
+    - `proveedor`: RUT (mejor) o parte del nombre. El RUT evita mezclar empresas
+      con prefijo parecido.
+    - `desde` / `hasta`: fechas AAAA-MM-DD sobre la fecha de envio de la oferta.
+    - `limite`: filas de detalle, por omision 25, tope 200.
+
+    Devuelve el detalle linea por linea ordenado por plata dejada en la mesa, mas
+    un `resumen` con el sobreprecio mediano y cuantas lineas NO se pudieron
+    comparar. Si `lineas_sin_comparar` es alto respecto de `lineas_comparadas`, el
+    resultado es de una parte y hay que decirlo.
+
+    La comparacion es dentro de la MISMA linea de la MISMA licitacion: es la unica
+    valida. No la presentes como "precio de mercado" del producto.
+    """
+    return _run(T.mp_precio_perdido, _store, proveedor, desde, hasta, limite)
+
+
+@mcp.tool(annotations=_RO)
+def mp_sin_competencia(proveedor: str | None = None, unspsc: str | None = None,
+                       organismo: str | None = None, desde: str | None = None,
+                       hasta: str | None = None, limite: int = 25) -> str:
+    """Licitaciones donde hubo UN SOLO oferente: donde se entra sin pelear precio.
+
+    Con `proveedor`, acota a su huella real -- los UNSPSC donde el ya oferta -- y
+    saca las licitaciones donde el unico oferente fue el mismo, que ya son suyas.
+
+    Sin filtros devuelve el universo, que es grande: [MEDIDO 2026-08-19] 1.657 de
+    7.273 licitaciones de un mes tuvieron un solo oferente, el 22,8%.
+
+    Un solo oferente NO garantiza adjudicacion: el organismo puede declararla
+    desierta igual.
+    """
+    return _run(T.mp_sin_competencia, _store, proveedor, unspsc, organismo,
+                desde, hasta, limite)
+
+
+@mcp.tool(annotations=_RO)
+def mp_huella(proveedor: str, limite: int = 20) -> str:
+    """Donde compite un proveedor: sus UNSPSC, con volumen y tasa de exito.
+
+    Sirve para responder "en que soy fuerte y en que no" y para acotar cualquier
+    otro analisis a su rubro real, en vez de a una clasificacion declarada.
+
+    `tasa_exito_pct` es sobre LINEAS ofertadas, no sobre licitaciones ganadas.
+    """
+    return _run(T.mp_huella, _store, proveedor, limite)
+
+
+@mcp.tool(annotations=_RO)
+def mp_comprador_perfil(organismo: str, limite: int = 15) -> str:
+    """Que compra un organismo, a quien y por cuanto.
+
+    Responde "quien le vende hoy a este comprador" -- el punto de partida de
+    cualquier estrategia de entrada. El monto ya excluye las ordenes que
+    ChileCompra saca de sus cifras oficiales por error de monto o de moneda.
+    """
+    return _run(T.mp_comprador_perfil, _store, organismo, limite)
+
+
+@mcp.tool(annotations=_RO)
 def mp_cuota_estado() -> str:
     """Cuanto queda del techo diario de ChileCompra. NO consume cuota.
 
