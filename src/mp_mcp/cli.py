@@ -80,7 +80,11 @@ def _insertar(store: Store, tabla: str, fila: dict) -> None:
     """
     cols = ", ".join(fila)
     marcas = ", ".join("?" * len(fila))
-    store.con.execute(f"INSERT INTO {tabla} ({cols}) VALUES ({marcas})",
+    # OR REPLACE y no INSERT pelado: [MEDIDO 2026-08-20] la licitacion
+    # 1057384-125-L126 abortaba con "Duplicate key item_id: ...#4" y sus items no
+    # entraban. Un detalle de la API puede traer dos veces el mismo correlativo, y
+    # reprocesar una licitacion ya cargada es normal en el refresco incremental.
+    store.con.execute(f"INSERT OR REPLACE INTO {tabla} ({cols}) VALUES ({marcas})",
                       list(fila.values()))
 
 
@@ -474,6 +478,9 @@ def cmd_sync(a) -> None:
     print(_json.dumps(informe, indent=2, ensure_ascii=False, default=str))
     if informe.get("tablas_vacias"):
         raise SystemExit("tablas vacias: %s" % informe["tablas_vacias"])
+    if informe.get("OMISIONES"):
+        raise SystemExit("cargas omitidas (%d): el almacen puede estar incompleto. %s"
+                         % (len(informe["OMISIONES"]), informe["OMISIONES"][:2]))
 
 
 def cmd_publicar(a) -> None:

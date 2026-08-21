@@ -289,13 +289,17 @@ def cargar_oc(con, csv_path: Path, periodo: str) -> dict:
     _exigir_columnas(con, "cruda", COLS_OC, f"oc-da {periodo}")
     ts = datetime.now(timezone.utc)
 
-    con.execute("DELETE FROM orden_compra WHERE _procedencia = ?",
-                [f"bulk-oc:{periodo}"])
-    con.execute("DELETE FROM orden_compra_item WHERE _procedencia = ?",
-                [f"bulk-oc:{periodo}"])
+    # TRANSACCION: si el INSERT falla, el DELETE se revierte. Sin esto, el
+    # 2026-08-20 se borraron 240.619 ordenes de compra que no se pudieron recargar.
+    con.execute("BEGIN TRANSACTION")
+    try:
+        con.execute("DELETE FROM orden_compra WHERE _procedencia = ?",
+                    [f"bulk-oc:{periodo}"])
+        con.execute("DELETE FROM orden_compra_item WHERE _procedencia = ?",
+                    [f"bulk-oc:{periodo}"])
 
-    con.execute(f"""
-        INSERT OR REPLACE INTO orden_compra
+        con.execute(f"""
+        INSERT OR REPLACE INTO orden_compra (codigo, nombre, descripcion, codigo_licitacion, estado, tipo, moneda, forma_pago, tipo_despacho, total, total_clp, total_neto_clp, impuestos_clp, promedio_calificacion, rut_proveedor, nombre_proveedor, organismo_codigo, organismo_nombre, region_comprador, comuna_comprador, fecha_envio, fecha_aceptacion, excluida_por_fuente, _procedencia, _ingerido_en)
         SELECT "Codigo", any_value("Nombre"), any_value("Descripcion/Obervaciones"),
                nullif(any_value("CodigoLicitacion"), ''), any_value("Estado"),
                any_value("CodigoAbreviadoTipoOC"), any_value("TipoMonedaOC"),
@@ -311,14 +315,14 @@ def cargar_oc(con, csv_path: Path, periodo: str) -> dict:
                any_value(TRY_CAST("FechaAceptacion" AS DATE)),
                FALSE, ?, ?
         FROM cruda WHERE "Codigo" IS NOT NULL GROUP BY "Codigo"
-    """, [f"bulk-oc:{periodo}", ts])
-    n_oc = con.execute("SELECT count(*) FROM orden_compra WHERE _procedencia = ?",
-                       [f"bulk-oc:{periodo}"]).fetchone()[0]
+        """, [f"bulk-oc:{periodo}", ts])
+        n_oc = con.execute("SELECT count(*) FROM orden_compra WHERE _procedencia = ?",
+                           [f"bulk-oc:{periodo}"]).fetchone()[0]
 
     # El precio sospechoso se guarda como NULL, no como 0: un 0 se promedia y
     # miente; un NULL se excluye y se cuenta.
-    con.execute(f"""
-        INSERT OR REPLACE INTO orden_compra_item
+        con.execute(f"""
+        INSERT OR REPLACE INTO orden_compra_item (item_id, codigo_oc, correlativo, unspsc_commodity, unspsc_clase, unspsc_familia, unspsc_segmento, especificacion_comprador, unidad_medida, cantidad, moneda, precio_neto, precio_neto_clp, total_clp, rut_proveedor, nombre_proveedor, organismo_codigo, organismo_nombre, region_comprador, comuna_comprador, fecha_envio, excluida_por_fuente, _procedencia, _ingerido_en)
         SELECT "IDItem", "Codigo", TRY_CAST("IDItem" AS INTEGER),
                "codigoProductoONU", NULL, NULL, NULL,
                "EspecificacionComprador", "UnidadMedida", {_num('cantidad')},
@@ -332,19 +336,19 @@ def cargar_oc(con, csv_path: Path, periodo: str) -> dict:
                "RegionUnidadCompra", "CiudadUnidadCompra",
                TRY_CAST("FechaEnvio" AS DATE), FALSE, ?, ?
         FROM cruda WHERE "IDItem" IS NOT NULL
-    """, [f"bulk-oc:{periodo}", ts])
-    n_item = con.execute(
-        "SELECT count(*) FROM orden_compra_item WHERE _procedencia = ?",
-        [f"bulk-oc:{periodo}"]).fetchone()[0]
+        """, [f"bulk-oc:{periodo}", ts])
+        n_item = con.execute(
+            "SELECT count(*) FROM orden_compra_item WHERE _procedencia = ?",
+            [f"bulk-oc:{periodo}"]).fetchone()[0]
 
-    con.execute("""
+        con.execute("""
         INSERT OR REPLACE INTO proveedor
         SELECT nullif("RutSucursal", ''), any_value("NombreProveedor"),
                any_value("RegionProveedor"), any_value("ComunaProveedor"),
                any_value("ActividadProveedor")
         FROM cruda WHERE nullif("RutSucursal", '') IS NOT NULL
         GROUP BY nullif("RutSucursal", '')""")
-    con.execute("""
+        con.execute("""
         INSERT OR REPLACE INTO organismo
         SELECT "CodigoOrganismoPublico", any_value("OrganismoPublico"),
                any_value("RegionUnidadCompra"), any_value("CiudadUnidadCompra"),
@@ -352,9 +356,15 @@ def cargar_oc(con, csv_path: Path, periodo: str) -> dict:
         FROM cruda WHERE "CodigoOrganismoPublico" IS NOT NULL
         GROUP BY "CodigoOrganismoPublico" """)
 
-    sospechosos = con.execute(
-        f"SELECT count(*) FROM cruda WHERE {_num('precioNeto')} < "
-        f"{PRECIO_MINIMO_CREIBLE}").fetchone()[0]
+        sospechosos = con.execute(
+            f"SELECT count(*) FROM cruda WHERE {_num('precioNeto')} < "
+            f"{PRECIO_MINIMO_CREIBLE}").fetchone()[0]
+        con.execute("COMMIT")
+    except Exception:
+        # El rollback es el punto de todo esto: deja los datos del periodo como
+        # estaban en vez de borrados a medias.
+        con.execute("ROLLBACK")
+        raise
     con.execute("DROP TABLE cruda")
     return {"filas_csv": filas, "orden_compra": n_oc, "orden_compra_item": n_item,
             "precios_descartados": sospechosos}
@@ -382,6 +392,10 @@ def cargar_lic(con, csv_path: Path, periodo: str) -> dict:
     ts = datetime.now(timezone.utc)
     proc = f"bulk-lic:{periodo}"
 
+    # Mismo riesgo que en cargar_oc: el DELETE sin transaccion borra y deja el
+    # hueco si el INSERT falla.
+    con.execute("BEGIN TRANSACTION")
+    _en_transaccion = True
     for _t in ("oferta", "adjudicacion_item", "licitacion", "licitacion_item"):
         con.execute(f"DELETE FROM {_t} WHERE _procedencia = ?", [proc])
 
@@ -511,6 +525,7 @@ def cargar_lic(con, csv_path: Path, periodo: str) -> dict:
     perdedoras = con.execute(
         "SELECT count(*) FROM oferta WHERE _procedencia = ? AND NOT seleccionada",
         [proc]).fetchone()[0]
+    con.execute("COMMIT")
     con.execute("DROP TABLE cruda")
     return {"filas_csv": filas, "licitacion": n_lic, "licitacion_item": n_item,
             "oferta": n_of, "ofertas_perdedoras": perdedoras,

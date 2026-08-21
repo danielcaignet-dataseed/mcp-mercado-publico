@@ -289,6 +289,17 @@ def sincronizar(meses_bulk: int = 2, meses_retencion: int = MESES_RETENCION,
         store.close()
         os.environ["MP_DB"] = str(destino)
 
+    # Una omision de carga NO puede reportarse como corrida OK. El 2026-08-20 dos
+    # corridas dijeron OK habiendo perdido 240.619 ordenes de compra, porque el
+    # error quedaba en una lista que nadie miraba.
+    omitidos = (informe.get("bulk") or {}).get("errores") or []
+    if omitidos:
+        informe["OMISIONES"] = omitidos
+        log("ATENCION: %d carga(s) OMITIDA(S). El almacen puede estar incompleto "
+            "aunque ninguna tabla este vacia:" % len(omitidos))
+        for o in omitidos:
+            log("   - %s" % o[:300])
+
     if publicar:
         if informe.get("tablas_vacias"):
             informe["publicado"] = False
