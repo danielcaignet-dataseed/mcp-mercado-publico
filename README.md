@@ -160,6 +160,36 @@ Un agente no puede afirmar más de lo que el payload sostiene.
 Las tres están declaradas como sondas (P-19, P-09, P-18) y aparecen en
 `CAPABILITIES.md` con su sello.
 
+## Esto es lo que corre en el VPS (2026-09-08)
+
+Hasta hoy el repo iba dos meses atrás de producción: `sync.py` (la ingesta),
+`bulk.py` y `analisis.py` **existían solo dentro del contenedor**
+`mp-mcp` del VPS, y `server.py`, `tools.py`, `store.py`, `cli.py`, `api.py`,
+`quota.py`, `semantic.py` y `sql/schema.sql` tenían parches que nunca llegaron
+acá. Una recreación de la imagen los borraba a todos — incluido el parche del
+techo de disco, que ya había costado cuatro corridas sin publicar.
+
+Lo que este repo agrega respecto de la versión del 1-ago:
+
+| módulo | por qué importa |
+|---|---|
+| `sync.py` | la ingesta completa: bulk + API incremental + retención + `refrescar_estados_rancios()` |
+| `bulk.py` | descarga y carga de los ZIP mensuales de ChileCompra |
+| `analisis.py` | los agregados que consumen las herramientas |
+
+`refrescar_estados_rancios()` cierra un dato que **mentía**: `[MEDIDO
+2026-09-08]` 1.524 licitaciones guardadas como `estado='Publicada'` con
+`fecha_cierre` ya pasada, porque `licitaciones_por_estado("activas")` deja de
+listar la licitación en cuanto cierra y su estado queda congelado. **No se
+infiere el estado** —escribir "Cerrada" porque la fecha pasó sería inventar un
+dato que ChileCompra no dio—: se paga el hit y se pregunta el detalle real, las
+más viejas primero, tope 800 por corrida y reservando 2.000 hits de cuota para
+que la higiene no canibalice la ingesta.
+
+Y las fallas de la API ahora cuentan como `OMISIONES`: antes un upsert que
+reventaba quedaba en un renglón del log y la corrida reportaba OK igual — el
+mismo patrón que el 2026-08-20 perdió 240.619 órdenes de compra en silencio.
+
 ## Estructura
 
 ```
