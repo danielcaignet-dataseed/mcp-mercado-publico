@@ -132,17 +132,28 @@ CAV_MONEDA = Caveat(
     sonda="P-11", severidad="alta",
 )
 CAV_OC_PROCESADO = Caveat(
-    "Fuente: CSV mensual de ChileCompra, que segun su propia documentacion "
-    "esta procesado: convertido a pesos y CON TRANSACCIONES ATIPICAS REMOVIDAS. "
-    "Se hereda una definicion de outlier ajena. No usar para benchmark de "
-    "precios: para eso usar la entidad adjudicacion_item, derivada de OCDS.",
+    "Las transacciones atipicas NO vienen removidas: es lo contrario de lo que "
+    "decia esta salvedad. [MEDIDO 2026-08-19] la descarga masiva trae TODAS las "
+    "ordenes, incluidas las que ChileCompra excluye de sus cifras oficiales por "
+    "error de monto o de tipo de moneda -- y sin filtrarlas, la I. Municipalidad "
+    "de Rio Bueno aparecia tercera en el gasto nacional por una orden de arriendo "
+    "de vehiculos cargada como 5.294.933 UF. Este almacen carga las dos listas de "
+    "exclusion que ChileCompra publica (14.443 codigos) y deja `total_clp` en NULL "
+    "en esas filas, marcadas con `excluida_por_fuente`. Asi que sumar total_clp ya "
+    "es correcto; lo que NO se puede es sumar `total`, que conserva el monto "
+    "original en su moneda. La version anterior de esta salvedad tambien mandaba a "
+    "usar adjudicacion_item 'derivada de OCDS': hoy viene del bulk lic-da.",
     sonda="P-10", severidad="alta",
 )
 CAV_OC_LATENCIA = Caveat(
-    "El CSV de ordenes de compra se publica a mas tardar el dia 20 del mes "
-    "siguiente: rezago de hasta ~50 dias. No sirve para preguntas sobre la "
-    "semana en curso.",
-    sonda="P-14", severidad="media",
+    "Rezago de UN DIA, no de 50. [MEDIDO 2026-08-19] la descarga masiva se "
+    "regenera todos los dias entre las 12:00 y las 14:00 y el dato mas reciente "
+    "del almacen es de ayer. Corrige la version anterior de esta salvedad, que "
+    "hablaba de 'hasta ~50 dias' porque se escribio cuando la unica via conocida "
+    "era el reporte MENSUAL (publicado el dia 20 del mes siguiente). Ese reporte "
+    "existe y sigue teniendo ese rezago, pero no es lo que carga este almacen. "
+    "Para el dia EN CURSO igual hace falta la API: mp_ordenes_vivo.",
+    sonda="P-14", severidad="baja",
 )
 CAV_MONTO_ESTIMADO = Caveat(
     "MontoEstimado solo es publico si VisibilidadMonto=1, y Estimacion=3 "
@@ -330,6 +341,8 @@ ORDEN_COMPRA = Entity(
     grano="Una fila = una orden de compra.",
     procedencia="oc-csv-procesado",
     dims=_idx([
+        _d("excluida_por_fuente", "Excluida de las cifras oficiales", "excluida_por_fuente",
+           nota="true = ChileCompra la excluye por error de monto o de moneda"),
         _d("codigo", "Codigo de la OC", "codigo", kind="code"),
         _d("codigo_licitacion", "Licitacion asociada", "codigo_licitacion", kind="code",
            nota="Vacio en compras sin licitacion (Convenio Marco, Compra Agil, trato directo)"),
@@ -346,7 +359,20 @@ ORDEN_COMPRA = Entity(
     measures=_idx([
         _m("n_ordenes", "Cantidad de ordenes", "codigo", FNS_CONTEO, "conteo"),
         _m("total_clp", "Total de la OC en CLP", "total_clp", FNS_NUMERICAS, "CLP",
-           caveats=(CAV_OC_PROCESADO, CAV_MONEDA)),
+           caveats=(Caveat(
+            "`total_clp` YA EXCLUYE las ordenes que ChileCompra saca de sus cifras "
+            "oficiales por error de monto o de tipo de moneda: en esas filas es NULL "
+            "y `excluida_por_fuente` es true. No es cosmetico. [MEDIDO 2026-08-19] "
+            "158 ordenes de 1,7 millones -- el 0,009% -- distorsionaban el ranking "
+            "de gasto entero: la I. Municipalidad de Rio Bueno aparecia tercera con "
+            "$1.053 mil millones por un arriendo de vehiculos cargado como 5.294.933 "
+            "UF (el monto en pesos dentro de una orden denominada en UF); su cifra "
+            "real es $11,4 mil millones. El Ministerio de Obras Publicas caia de "
+            "$2.134 a $464 mil millones. Si necesitas el universo crudo, filtra por "
+            "`excluida_por_fuente` y usa `total`, que conserva el monto original en "
+            "su moneda -- pero NO lo sumes entre monedas.",
+            sonda=None, severidad="alta"),
+        CAV_OC_PROCESADO, CAV_MONEDA)),
         _m("total_neto_clp", "Total neto en CLP", "total_neto_clp", FNS_NUMERICAS, "CLP",
            caveats=(CAV_OC_PROCESADO, CAV_MONEDA)),
         _m("promedio_calificacion", "Calificacion promedio del proveedor",
@@ -366,6 +392,8 @@ ORDEN_COMPRA_ITEM = Entity(
     grano="Una fila = una linea de una OC.",
     procedencia="oc-csv-procesado",
     dims=_idx([
+        _d("excluida_por_fuente", "Excluida de las cifras oficiales", "excluida_por_fuente",
+           nota="true = ChileCompra la excluye por error de monto o de moneda"),
         _d("codigo_oc", "Codigo de la OC", "codigo_oc", kind="code"),
         _d("moneda", "Moneda", "moneda"),
         _d("fecha_envio", "Fecha de envio", "fecha_envio", kind="temporal"),
@@ -376,7 +404,20 @@ ORDEN_COMPRA_ITEM = Entity(
     measures=_idx([
         _m("n_items", "Cantidad de lineas", "item_id", FNS_CONTEO, "conteo"),
         _m("precio_neto_clp", "Precio unitario neto en CLP", "precio_neto_clp",
-           FNS_NUMERICAS, "CLP", caveats=(CAV_OC_PROCESADO, CAV_MONEDA)),
+           FNS_NUMERICAS, "CLP", caveats=(Caveat(
+            "`total_clp` YA EXCLUYE las ordenes que ChileCompra saca de sus cifras "
+            "oficiales por error de monto o de tipo de moneda: en esas filas es NULL "
+            "y `excluida_por_fuente` es true. No es cosmetico. [MEDIDO 2026-08-19] "
+            "158 ordenes de 1,7 millones -- el 0,009% -- distorsionaban el ranking "
+            "de gasto entero: la I. Municipalidad de Rio Bueno aparecia tercera con "
+            "$1.053 mil millones por un arriendo de vehiculos cargado como 5.294.933 "
+            "UF (el monto en pesos dentro de una orden denominada en UF); su cifra "
+            "real es $11,4 mil millones. El Ministerio de Obras Publicas caia de "
+            "$2.134 a $464 mil millones. Si necesitas el universo crudo, filtra por "
+            "`excluida_por_fuente` y usa `total`, que conserva el monto original en "
+            "su moneda -- pero NO lo sumes entre monedas.",
+            sonda=None, severidad="alta"),
+        CAV_OC_PROCESADO, CAV_MONEDA)),
         _m("cantidad", "Cantidad", "cantidad", FNS_NUMERICAS, "unidad_medida"),
         _m("total_clp", "Total de la linea en CLP", "total_clp", FNS_NUMERICAS, "CLP",
            caveats=(CAV_OC_PROCESADO, CAV_MONEDA)),
@@ -450,9 +491,93 @@ UNSPSC = Entity(
 )
 
 
+OFERTA = Entity(
+    name="oferta",
+    label="Oferta de un proveedor a una linea de licitacion",
+    table="oferta",
+    grano="Una fila = una oferta de un proveedor a una linea de una licitacion. "
+          "Incluye las que PERDIERON.",
+    procedencia="bulk-lic (datos abiertos de ChileCompra, sin ticket)",
+    dims=_idx([
+        _d("codigo_licitacion", "Licitacion", "codigo_licitacion", kind="code"),
+        _d("correlativo_item", "Linea", "correlativo_item", kind="code"),
+        _d("unspsc_commodity", "Commodity UNSPSC", "unspsc_commodity", kind="code",
+           vocabulario="unspsc_commodity"),
+        _d("nombre_linea", "Nombre de la linea", "nombre_linea"),
+        _d("rut_proveedor", "RUT del oferente", "rut_proveedor", kind="code",
+           vocabulario="proveedor"),
+        _d("nombre_proveedor", "Oferente", "nombre_proveedor"),
+        _d("seleccionada", "Gano esta linea", "seleccionada",
+           nota="true = su oferta fue la seleccionada para esa linea"),
+        _d("estado_oferta", "Estado de la oferta", "estado_oferta",
+           nota="Aceptada | Rechazada"),
+        _d("moneda", "Moneda", "moneda",
+           nota="normalizada a CLP/USD/CLF/UTM/EUR; NULL si la fuente decia "
+                "'Moneda revisar'"),
+        _d("n_oferentes", "Numero de oferentes del proceso", "n_oferentes"),
+        _d("criterios", "Criterios de evaluacion", "criterios"),
+        _d("organismo_codigo", "Organismo", "organismo_codigo", kind="code",
+           vocabulario="organismo"),
+        _d("organismo_nombre", "Nombre del organismo", "organismo_nombre"),
+        _d("fecha_adjudicacion", "Fecha de adjudicacion", "fecha_adjudicacion",
+           kind="temporal",
+           nota="PUEDE SER ESTIMADA FUTURA: para ordenar hechos usa fecha_envio_oferta"),
+        _d("fecha_envio_oferta", "Fecha de envio de la oferta", "fecha_envio_oferta",
+           kind="temporal", nota="la fecha del hecho: la oferta se envio"),
+    ]),
+    measures=_idx([
+        _m("n_ofertas", "Cantidad de ofertas", "oferta_id", FNS_CONTEO, "conteo"),
+        _m("n_oferentes_distintos", "Oferentes distintos", "rut_proveedor",
+           ("count_distinct",), "conteo"),
+        _m("precio_unitario_clp", "Precio unitario ofertado en CLP",
+           "precio_unitario_clp", FNS_NUMERICAS, "monto"),
+        _m("total_ofertado", "Valor total ofertado", "total_ofertado", FNS_NUMERICAS,
+           "monto"),
+        _m("monto_adjudicado", "Monto adjudicado de la linea", "monto_adjudicado",
+           FNS_NUMERICAS, "monto"),
+        _m("cantidad_adjudicada", "Cantidad adjudicada", "cantidad_adjudicada",
+           FNS_NUMERICAS, "cantidad"),
+    ]),
+    caveats=(
+        Caveat("Es la unica entidad con las ofertas de los PERDEDORES. [MEDIDO "
+               "2026-08-19] sobre un mes: 119.281 ofertas, de las cuales 111.045 no "
+               "fueron seleccionadas, con precio unitario y RUT al 100%. Esto NO "
+               "viene de la API v1, que no expone ofertas: viene de los datos "
+               "abiertos, con un dia de desfase.",
+               sonda=None, severidad="baja"),
+        Caveat("NO calcules dispersion de precios agrupando por UNSPSC. [MEDIDO 2026-08-19] un "
+               "mismo commodity mezcla hasta 19 unidades de medida distintas, con "
+               "ratios de x13.450.000 entre minimo y maximo: el 'precio unitario' de "
+               "un servicio global y el de un metro lineal no son comparables. La "
+               "comparacion valida es DENTRO de la misma linea de la misma "
+               "licitacion, donde unidad y objeto son identicos por construccion; "
+               "ahi el sobreprecio mediano del perdedor sobre el ganador fue 20,7%.",
+               sonda=None, severidad="alta"),
+        Caveat("`criterios` tiene cobertura real del 89%, no del 100%: [MEDIDO 2026-08-19] 799 "
+               "de 7.273 licitaciones traen 'NA' literal en la fuente y quedan como "
+               "NULL. Y solo el 54,4% menciona 'Precio' entre sus criterios.",
+               sonda=None, severidad="media"),
+        Caveat("`precio_unitario` es NULL cuando la fuente traia menos de 2 pesos: "
+               "[MEDIDO 2026-08-19] 4.973 de 119.281 ofertas venian con 0 o 1 peso. No se "
+               "corrigen ni se imputan, se descartan y quedan marcadas en "
+               "`precio_sospechoso`. Cualquier promedio excluye esas filas.",
+               sonda=None, severidad="media"),
+        Caveat("`precio_unitario_clp` usa la paridad del MES, no del dia, y la serie "
+               "de ChileCompra va un mes atras: [MEDIDO 2026-08-19] para los meses posteriores "
+               "al ultimo publicado se arrastra la ultima paridad disponible. Para "
+               "montos grandes en meses volatiles eso introduce error.",
+               sonda=None, severidad="media"),
+        Caveat("`fecha_adjudicacion` puede ser una fecha ESTIMADA FUTURA: [MEDIDO 2026-08-19] "
+               "hay filas con adjudicacion en meses que todavia no ocurrieron. Para "
+               "ordenar hechos usa `fecha_envio_oferta`, que si ocurrio.",
+               sonda=None, severidad="alta"),
+    ),
+)
+
+
 ENTIDADES: dict[str, Entity] = {
     e.name: e for e in [
-        LICITACION, LICITACION_ITEM, ADJUDICACION_ITEM,
+        LICITACION, LICITACION_ITEM, ADJUDICACION_ITEM, OFERTA,
         ORDEN_COMPRA, ORDEN_COMPRA_ITEM,
         ORGANISMO, PROVEEDOR, UNSPSC,
     ]

@@ -80,7 +80,11 @@ def _insertar(store: Store, tabla: str, fila: dict) -> None:
     """
     cols = ", ".join(fila)
     marcas = ", ".join("?" * len(fila))
-    store.con.execute(f"INSERT INTO {tabla} ({cols}) VALUES ({marcas})",
+    # OR REPLACE y no INSERT pelado: [MEDIDO 2026-08-20] la licitacion
+    # 1057384-125-L126 abortaba con "Duplicate key item_id: ...#4" y sus items no
+    # entraban. Un detalle de la API puede traer dos veces el mismo correlativo, y
+    # reprocesar una licitacion ya cargada es normal en el refresco incremental.
+    store.con.execute(f"INSERT OR REPLACE INTO {tabla} ({cols}) VALUES ({marcas})",
                       list(fila.values()))
 
 
@@ -183,8 +187,8 @@ def cmd_live_listado(a) -> None:
     cfg = Config.from_env()
     store = Store(cfg)
     cli = ClienteAPI(cfg, Cuota(store))
-    d = (cli.licitaciones_por_fecha(a.fecha) if a.fecha
-         else cli.licitaciones_por_estado(a.estado))
+    d = (cli.licitaciones_por_fecha(a.fecha, a.estado) if a.fecha
+         else cli.licitaciones_por_estado(a.estado or "activas"))
     codigos = [x.get("CodigoExterno") for x in (d.get("Listado") or [])]
     print(f"listado: {len(codigos)} licitaciones (Cantidad={d.get('Cantidad')})")
 
@@ -460,6 +464,25 @@ def cmd_set_ticket(a) -> None:
         print(f'  icacls "{f}" /inheritance:r /grant:r "%USERNAME%:R"')
 
 
+def cmd_sync(a) -> None:
+    """Ciclo completo: bulk historico + API para el dia en curso.
+
+    Es lo que corre el cron. Todo se construye en mp.duckdb.next y solo el ultimo
+    paso toca la base servida, con rename atomico. Si quedan tablas vacias NO
+    publica: preferimos servir el almacen anterior antes que uno incompleto.
+    """
+    import json as _json
+    from .sync import sincronizar
+    informe = sincronizar(meses_bulk=a.meses, meses_retencion=a.retencion,
+                          con_api=not a.sin_api, publicar=not a.no_publicar)
+    print(_json.dumps(informe, indent=2, ensure_ascii=False, default=str))
+    if informe.get("tablas_vacias"):
+        raise SystemExit("tablas vacias: %s" % informe["tablas_vacias"])
+    if informe.get("OMISIONES"):
+        raise SystemExit("cargas omitidas (%d): el almacen puede estar incompleto. %s"
+                         % (len(informe["OMISIONES"]), informe["OMISIONES"][:2]))
+
+
 def cmd_publicar(a) -> None:
     """Publica el snapshot construido, con rename atomico.
 
@@ -506,13 +529,31 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("live-listado", help="listado del dia + detalle de cada una")
-    p.add_argument("--estado", default="activas")
+    p.add_argument("--estado", default=None,
+                   help="activas|Publicada|Cerrada|Adjudicada|Desierta|Revocada|"
+                        "Suspendida|todos. Por defecto 'activas'. SE COMBINA con "
+                        "--fecha: '--fecha 28072026 --estado adjudicada' devuelve "
+                        "las adjudicadas de ese dia (MEDIDO 2026-08-12: 259). Sin "
+                        "--fecha el endpoint responde sobre el dia corriente, por "
+                        "eso '--estado adjudicada' a secas da 0.")
     p.add_argument("--fecha", help="ddmmaaaa")
     p.add_argument("--solo-listado", action="store_true")
     p.add_argument("--limite", type=int,
                    help="muestrea N licitaciones del listado (muestreo sistematico) "
                         "para no gastar un hit por cada una")
     p.set_defaults(fn=cmd_live_listado)
+
+    p = sub.add_parser("sync", help="bulk + api + retencion + publicar (el cron)")
+    p.add_argument("--meses", type=int, default=2,
+                   help="cuantos meses de bulk refrescar (default 2: el actual y "
+                        "el anterior, porque el mes en curso se rearma a diario)")
+    p.add_argument("--retencion", type=int, default=36,
+                   help="meses a conservar (default 36 = 7,87 GB medidos)")
+    p.add_argument("--sin-api", action="store_true",
+                   help="omite el refresco por API; no gasta cuota")
+    p.add_argument("--no-publicar", action="store_true",
+                   help="construye el .next y NO hace el rename")
+    p.set_defaults(fn=cmd_sync)
 
     p = sub.add_parser("publicar", help="rename atomico del snapshot construido")
     p.add_argument("--desde")

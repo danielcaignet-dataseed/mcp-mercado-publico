@@ -53,6 +53,64 @@ def _decodificar(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _dv_modulo11(cuerpo: str) -> str:
+    """Digito verificador de un RUT chileno. Determinista, no es una adivinanza."""
+    suma, factor = 0, 2
+    for ch in reversed(cuerpo):
+        suma += int(ch) * factor
+        factor = 2 if factor == 7 else factor + 1
+    resto = 11 - (suma % 11)
+    return {11: "0", 10: "K"}.get(resto, str(resto))
+
+
+def _puntear(cuerpo: str) -> str:
+    grupos = []
+    while len(cuerpo) > 3:
+        grupos.insert(0, cuerpo[-3:])
+        cuerpo = cuerpo[:-3]
+    grupos.insert(0, cuerpo)
+    return ".".join(grupos)
+
+
+def normalizar_rut(rut: str) -> str:
+    """A NN.NNN.NNN-D, el unico formato que acepta BuscarProveedor (MEDIDO).
+
+    `96756540` es ambiguo: puede ser el cuerpo sin digito verificador, o
+    `9675654-0`. Se desempata con modulo 11, que es un checksum verificable y no
+    una suposicion: para 9675654 el DV es 2, no 0, asi que la lectura correcta es
+    el cuerpo completo y el DV que corresponde es 7 -> 96.756.540-7.
+
+    Si el DV que trae la entrada NO calza con el cuerpo, se respeta tal cual y no
+    se corrige. Un digito mal tipeado es dato del usuario, no ruido nuestro:
+    arreglarlo en silencio consultaria por una empresa distinta de la que pidio.
+    `dv_calza()` permite avisarlo.
+    """
+    s = "".join(ch for ch in str(rut) if ch.isalnum()).upper()
+    if len(s) < 2:
+        return str(rut).strip()
+
+    # a) cuerpo + DV correcto
+    if s[:-1].isdigit() and _dv_modulo11(s[:-1]) == s[-1]:
+        return _puntear(s[:-1]) + "-" + s[-1]
+    # b) todo digitos y el ultimo no sirve como DV -> era el cuerpo entero
+    if s.isdigit():
+        return _puntear(s) + "-" + _dv_modulo11(s)
+    # c) DV que no calza: se manda lo que dio el usuario, solo formateado
+    if s[:-1].isdigit():
+        return _puntear(s[:-1]) + "-" + s[-1]
+    return str(rut).strip()
+
+
+def dv_calza(rut: str) -> bool | None:
+    """True/False si se puede evaluar el digito verificador; None si no aplica."""
+    s = "".join(ch for ch in str(rut) if ch.isalnum()).upper()
+    if len(s) < 2 or not s[:-1].isdigit():
+        return None
+    if s.isdigit() and _dv_modulo11(s[:-1]) != s[-1]:
+        return None            # se leyo como cuerpo completo: no habia DV que juzgar
+    return _dv_modulo11(s[:-1]) == s[-1]
+
+
 class ClienteAPI:
     """Cliente con marcapasos y reintento.
 
@@ -139,31 +197,134 @@ class ClienteAPI:
             f"MP_MIN_INTERVALO o correr en la ventana 22:00-07:00 que ellos "
             f"recomiendan. Ver sonda P-21.")
 
-    # -- endpoints ---------------------------------------------------------
+    # -- endpoints: licitaciones -------------------------------------------
+
+    def licitaciones_listado(self, fecha: str | None = None, estado: str | None = None,
+                             codigo_organismo: str | None = None,
+                             codigo_proveedor: str | None = None,
+                             motivo="ingesta") -> dict:
+        """Listado con los cuatro filtros documentados, combinables.
+
+        `[MEDIDO 2026-08-12]` el item del listado trae exactamente 4 campos:
+        CodigoExterno, Nombre, CodigoEstado, FechaCierre. Para monto, comprador,
+        items o adjudicacion hace falta el detalle (`licitacion()`), un hit por
+        codigo.
+
+        Sin ningun filtro el endpoint responde sobre el **dia corriente**. Por eso
+        `estado=adjudicada` a secas puede dar Cantidad=0: no es que no existan
+        adjudicadas, es que hoy no se adjudico nada.
+
+        `[MEDIDO]` fecha=28072026 -> 700; +estado=adjudicada -> 259.
+        """
+        p: dict[str, str] = {}
+        if fecha:
+            p["fecha"] = fecha
+        if estado:
+            p["estado"] = estado
+        if codigo_organismo:
+            p["CodigoOrganismo"] = codigo_organismo
+        if codigo_proveedor:
+            p["CodigoProveedor"] = codigo_proveedor
+        return self._get("publico/licitaciones.json", p, motivo)
 
     def licitaciones_por_estado(self, estado: str = "activas", motivo="ingesta") -> dict:
         """Listado. Devuelve solo 4 campos por licitacion (verificado por P-01)."""
-        return self._get("publico/licitaciones.json", {"estado": estado}, motivo)
+        return self.licitaciones_listado(estado=estado, motivo=motivo)
 
-    def licitaciones_por_fecha(self, fecha_ddmmaaaa: str, motivo="ingesta") -> dict:
-        return self._get("publico/licitaciones.json", {"fecha": fecha_ddmmaaaa}, motivo)
+    def licitaciones_por_fecha(self, fecha_ddmmaaaa: str, estado: str | None = None,
+                               motivo="ingesta") -> dict:
+        """Listado de un dia. `estado` es combinable con `fecha`."""
+        return self.licitaciones_listado(fecha=fecha_ddmmaaaa, estado=estado, motivo=motivo)
+
+    def licitaciones_por_organismo(self, codigo_organismo: str,
+                                   motivo="ingesta") -> dict:
+        """`[MEDIDO]` CodigoOrganismo=111870 (Div. Logistica del Ejercito) -> 2."""
+        return self.licitaciones_listado(codigo_organismo=codigo_organismo, motivo=motivo)
+
+    def licitaciones_por_proveedor(self, codigo_proveedor: str,
+                                   motivo="ingesta") -> dict:
+        """Licitaciones de un proveedor. Es el CODIGO de empresa, no el RUT:
+        se obtiene con `buscar_proveedor()`."""
+        return self.licitaciones_listado(codigo_proveedor=codigo_proveedor, motivo=motivo)
 
     def licitacion(self, codigo: str, motivo="on-demand") -> dict:
         """Detalle. Unica fuente de Items/UNSPSC, monto, comprador y fechas."""
         return self._get("publico/licitaciones.json", {"codigo": codigo}, motivo)
 
-    def ordenes_por_fecha(self, fecha_ddmmaaaa: str, motivo="ingesta") -> dict:
-        return self._get("publico/ordenesdecompra.json", {"fecha": fecha_ddmmaaaa}, motivo)
+    # -- endpoints: ordenes de compra --------------------------------------
 
-    def orden(self, codigo: str, motivo="on-demand") -> dict:
+    def ordenes_listado(self, fecha: str | None = None, estado: str | None = None,
+                        codigo_organismo: str | None = None,
+                        codigo_proveedor: str | None = None,
+                        motivo="ingesta") -> dict:
+        """Listado de OC con los cuatro filtros documentados.
+
+        `[MEDIDO 2026-08-12]` el item trae **solo 3 campos**: Codigo, Nombre,
+        CodigoEstado. Ni fecha, ni proveedor, ni monto. Para eso, detalle por
+        codigo con `orden_compra()`.
+
+        `[MEDIDO]` y esto importa para el consumidor: **no hay paginacion**.
+        fecha=28072026 devolvio Cantidad=12265 y las 12.265 en el mismo cuerpo.
+        Quien llame esto tiene que truncar.
+        """
+        p: dict[str, str] = {}
+        if fecha:
+            p["fecha"] = fecha
+        if estado:
+            p["estado"] = estado
+        if codigo_organismo:
+            p["CodigoOrganismo"] = codigo_organismo
+        if codigo_proveedor:
+            p["CodigoProveedor"] = codigo_proveedor
+        return self._get("publico/ordenesdecompra.json", p, motivo)
+
+    def ordenes_por_fecha(self, fecha_ddmmaaaa: str, motivo="ingesta") -> dict:
+        return self.ordenes_listado(fecha=fecha_ddmmaaaa, motivo=motivo)
+
+    def ordenes_por_estado(self, estado: str, motivo="on-demand") -> dict:
+        """`[MEDIDO 2026-08-12]` enviadaproveedor 2.879 · aceptada 4.364 ·
+        cancelada 116 · recepcionconforme 4.857 · todos 12.379."""
+        return self.ordenes_listado(estado=estado, motivo=motivo)
+
+    def ordenes_por_proveedor(self, codigo_proveedor: str, motivo="on-demand") -> dict:
+        """`[MEDIDO]` CodigoProveedor=47740 (B BRAUN MEDICAL SPA) -> 52 OC.
+        Es el codigo de empresa, no el RUT: usar `buscar_proveedor()` antes."""
+        return self.ordenes_listado(codigo_proveedor=codigo_proveedor, motivo=motivo)
+
+    def ordenes_por_organismo(self, codigo_organismo: str, motivo="on-demand") -> dict:
+        """`[MEDIDO]` CodigoOrganismo=111870 -> 310 OC."""
+        return self.ordenes_listado(codigo_organismo=codigo_organismo, motivo=motivo)
+
+    def orden_compra(self, codigo: str, motivo="on-demand") -> dict:
+        """Detalle de una OC: totales, items, proveedor y fechas de la orden."""
         return self._get("publico/ordenesdecompra.json", {"codigo": codigo}, motivo)
 
-    def proveedor(self, rut: str, motivo="on-demand") -> dict:
+    # -- catalogo de empresas ----------------------------------------------
+
+    def buscar_proveedor(self, rut: str, motivo="on-demand") -> dict:
+        """RUT -> codigo y nombre de empresa proveedora.
+
+        El RUT se normaliza a NN.NNN.NNN-D porque **es el unico formato que este
+        endpoint acepta**. `[MEDIDO 2026-08-12]` con el RUT de B BRAUN MEDICAL SPA:
+
+            96.756.540-7  -> CodigoEmpresa 47740
+            96756540-7    -> Codigo 10200 "No hay resultados de empresas."
+            96756540      -> idem
+            967565407     -> idem
+
+        Sin normalizar, el formato natural que escribe cualquiera devuelve vacio
+        y el agente concluye que la empresa no existe.
+        """
         return self._get("Publico/Empresas/BuscarProveedor",
-                         {"rutempresaproveedor": rut}, motivo)
+                         {"rutempresaproveedor": normalizar_rut(rut)}, motivo)
+
+    def buscar_comprador(self, motivo="on-demand") -> dict:
+        """Catalogo completo de organismos compradores. Un solo hit."""
+        return self._get("Publico/Empresas/BuscarComprador", {}, motivo)
 
     def compradores(self, motivo="ingesta") -> dict:
-        return self._get("Publico/Empresas/BuscarComprador", {}, motivo)
+        """Alias historico que usa la sonda P-05."""
+        return self.buscar_comprador(motivo=motivo)
 
     def close(self) -> None:
         self._cli.close()
